@@ -68,5 +68,47 @@ services:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
 
+  # ── WhatsApp: Evolution API (puente a WhatsApp) ──────────────────────
+  evolution-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: evolution
+      POSTGRES_PASSWORD: evolution
+      POSTGRES_DB: evolution
+    volumes:
+      - evolution_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evolution"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  evolution:
+    image: evoapicloud/evolution-api:latest
+    ports:
+      - "8080:8080"
+    environment:
+      # Clave admin: tiene que coincidir con EVOLUTION_API_KEY del backend.
+      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY:-kore-evolution-admin-key}
+      SERVER_URL: http://localhost:8080
+      DATABASE_ENABLED: "true"
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: postgresql://evolution:evolution@evolution-db:5432/evolution?schema=public
+      DATABASE_CONNECTION_CLIENT_NAME: evolution_kore
+      DATABASE_SAVE_DATA_INSTANCE: "true"
+      DATABASE_SAVE_DATA_NEW_MESSAGE: "true"
+      DATABASE_SAVE_MESSAGE_UPDATE: "true"
+      CACHE_REDIS_ENABLED: "true"
+      CACHE_REDIS_URI: redis://redis:6379/6
+      CACHE_REDIS_PREFIX_KEY: evolution
+      CACHE_LOCAL_ENABLED: "false"
+    depends_on:
+      evolution-db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    volumes:
+      - evolution_instances:/evolution/instances
+
 volumes:
   pgdata:
+  evolution_pgdata:
+  evolution_instances:

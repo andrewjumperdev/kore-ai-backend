@@ -6,6 +6,7 @@ from app.api.v1 import (
     customer_service,
     escalations,
     events,
+    integrations,
     leads,
     metrics,
     niches,
@@ -21,6 +22,7 @@ api_router.include_router(agents.router, prefix="/agents", tags=["agents"])
 api_router.include_router(
     customer_service.router, prefix="/customer-service", tags=["customer-service"]
 )
+api_router.include_router(integrations.router, prefix="/integrations", tags=["integrations"])
 api_router.include_router(events.router, prefix="/events", tags=["events"])
 api_router.include_router(escalations.router, prefix="/escalations", tags=["escalations"])
 api_router.include_router(metrics.router, prefix="/metrics", tags=["metrics"])

@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     secret_key: str = "dev-secret-change-me"
     api_v1_prefix: str = "/api/v1"
     project_name: str = "Kore AI"
+    # URL pública del backend, alcanzable por proveedores externos (webhooks de
+    # Evolution, etc.). En local con Evolution en docker y backend en el host:
+    # host.docker.internal. En producción: tu dominio.
+    public_base_url: str = Field(
+        default="http://host.docker.internal:8000", alias="PUBLIC_BASE_URL"
+    )
 
     # Datastores
     postgres_dsn: str = "postgresql+asyncpg://kore:kore@localhost:5432/kore"

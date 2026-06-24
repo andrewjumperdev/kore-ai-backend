@@ -98,7 +98,7 @@ def process_buffer_task(tenant_id: str, chat_id: str, message_id: str) -> None:
     async def _run() -> None:
         import redis.asyncio as aioredis
 
-        from app.integrations.evolution import evolution_channel
+        from app.integrations.evolution import evolution_channel, instance_for_tenant
         from app.services.contact_service import ContactService
         from app.services.customer_service_service import CustomerServiceService
 
@@ -140,7 +140,9 @@ def process_buffer_task(tenant_id: str, chat_id: str, message_id: str) -> None:
                     )
                     reply = result.get("reply") or ""
                     if reply:
-                        await evolution_channel.send(to=chat_id, body=reply)
+                        await evolution_channel.send(
+                            to=chat_id, body=reply, instance=instance_for_tenant(tenant_id)
+                        )
 
             # Limpiamos el claim sólo tras responder OK (Fase 4). Si algo falla
             # antes, el claim queda y el retry de Dramatiq lo reprocesa.

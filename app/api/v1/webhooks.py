@@ -14,7 +14,7 @@ from app.core.exceptions import AuthenticationError
 from app.core.logging import get_logger
 from app.events.bus import event_bus
 from app.events.types import EventName
-from app.integrations.evolution import evolution_channel
+from app.integrations.evolution import evolution_channel, instance_for_tenant
 from app.integrations.plaud import PlaudConnector, PlaudExport
 from app.integrations.registry import get_channel
 from app.integrations.transcription import transcription
@@ -54,12 +54,17 @@ async def evolution_inbound(tenant_id: UUID, request: Request):
     payload = await request.json()
     messages = evolution_channel.parse_webhook(payload)
 
+    instance = instance_for_tenant(str(tenant_id))
     scheduled = 0
     for msg in messages:
+        if msg.raw.get("from_me"):
+            continue  # no responder a mensajes salientes propios
         is_audio = bool(msg.raw.get("is_audio"))
         content = msg.text
         if is_audio and msg.provider_message_id:
-            audio = await evolution_channel.get_media_base64(msg.provider_message_id)
+            audio = await evolution_channel.get_media_base64(
+                msg.provider_message_id, instance=instance
+            )
             if audio:
                 content = await transcription.transcribe(audio)
         if not content:
