@@ -1,0 +1,54 @@
+[project]
+name = "kore-ai-backend"
+version = "0.1.0"
+description = "Kore AI — The Operating System for Growth. Multi-tenant AI agent platform."
+requires-python = ">=3.11"
+dependencies = [
+    # API
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "gunicorn>=22.0",
+    "python-multipart>=0.0.9",
+    # Settings / validation
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    # Database
+    "sqlalchemy[asyncio]>=2.0.30",
+    "asyncpg>=0.29",
+    "alembic>=1.13",
+    "pgvector>=0.3",
+    # Cache / queue state
+    "redis>=5.0",
+    # Async task queue
+    "dramatiq[redis,watch]>=1.17",
+    "apscheduler>=3.10",
+    # Auth
+    "pyjwt>=2.8",
+    "passlib[bcrypt]>=1.7",
+    # LLM
+    "anthropic>=0.40",
+    # Integrations
+    "httpx>=0.27",
+    "stripe>=10.0",
+    # Observability
+    "structlog>=24.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
