@@ -11,6 +11,7 @@ from app.api.v1 import (
     leads,
     metrics,
     niches,
+    onboarding,
     prospecting,
     tenants,
     webhooks,
@@ -27,6 +28,7 @@ api_router.include_router(
 )
 api_router.include_router(integrations.router, prefix="/integrations", tags=["integrations"])
 api_router.include_router(prospecting.router, prefix="/prospecting", tags=["prospecting"])
+api_router.include_router(onboarding.router, prefix="/onboarding", tags=["onboarding"])
 api_router.include_router(events.router, prefix="/events", tags=["events"])
 api_router.include_router(escalations.router, prefix="/escalations", tags=["escalations"])
 api_router.include_router(metrics.router, prefix="/metrics", tags=["metrics"])

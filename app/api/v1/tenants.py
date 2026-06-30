@@ -4,7 +4,6 @@ from fastapi import APIRouter, status
 
 from app.api.deps import DbSession
 from app.core.exceptions import NotFoundError
-from app.core.enums import Module
 from app.core.security import generate_api_key
 from app.models.tenant import Tenant, TenantApiKey
 from app.schemas.tenant import TenantCreate, TenantCreated
@@ -21,15 +20,9 @@ async def create_tenant(body: TenantCreate, session: DbSession) -> TenantCreated
     if niche is None:
         raise NotFoundError(f"Unknown niche '{body.niche_slug}'")
 
-    # MVP: habilitamos todos los módulos por defecto para que los agentes
-    # (content, etc.) operen sin requerir antes el diagnóstico del Coach. El Coach
-    # los re-calibra cuando corre.
-    tenant = Tenant(
-        name=body.name,
-        slug=body.slug,
-        niche_id=niche.id,
-        enabled_modules=[m.value for m in Module],
-    )
+    # P6/§04-01: el tenant nace SIN módulos. El Coach Agent los habilita recién
+    # tras completar el diagnóstico del onboarding (POST /onboarding/diagnose).
+    tenant = Tenant(name=body.name, slug=body.slug, niche_id=niche.id)
     session.add(tenant)
     await session.flush()
 
