@@ -79,6 +79,21 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str = Field(default="", alias="ELEVENLABS_API_KEY")
     elevenlabs_voice_id: str = Field(default="", alias="ELEVENLABS_VOICE_ID")
 
+    # Cold email / prospección — SMTP de salida (skip seguro sin host)
+    smtp_host: str = Field(default="", alias="SMTP_HOST")
+    smtp_port: int = Field(default=587, alias="SMTP_PORT")
+    smtp_user: str = Field(default="", alias="SMTP_USER")
+    smtp_password: str = Field(default="", alias="SMTP_PASSWORD")
+    smtp_from: str = Field(default="", alias="SMTP_FROM")
+    smtp_use_tls: bool = Field(default=True, alias="SMTP_USE_TLS")
+    prospecting_batch_size: int = 5
+    # Persona del icebreaker (valores por defecto = los del flujo n8n)
+    icebreaker_sender_name: str = Field(default="Andrew Alfaro", alias="ICEBREAKER_SENDER_NAME")
+    icebreaker_company: str = Field(default="Jumper Enterprise", alias="ICEBREAKER_COMPANY")
+    icebreaker_cta_url: str = Field(
+        default="https://agents-ai.andrewcr.com/", alias="ICEBREAKER_CTA_URL"
+    )
+
     @property
     def is_production(self) -> bool:
         return self.env == "production"

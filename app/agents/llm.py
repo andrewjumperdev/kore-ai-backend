@@ -36,25 +36,17 @@ class LLMClient:
         else:
             self.model = settings.llm_model
             self.api_key = settings.anthropic_api_key
-
-        self._client = None
-        if self.api_key:
-            if self.provider == "openai":
-                from openai import AsyncOpenAI
-
-                self._client = AsyncOpenAI(api_key=self.api_key)
-            else:
-                from anthropic import AsyncAnthropic
-
-                self._client = AsyncAnthropic(api_key=self.api_key)
-        log.info("llm.init", provider=self.provider, model=self.model, live=bool(self._client))
+        # NO cacheamos el cliente: el worker corre un event loop nuevo por task
+        # (asyncio.run), y un cliente httpx global se ata al primer loop → luego
+        # "Event loop is closed". Creamos (y cerramos) el cliente por llamada.
+        log.info("llm.init", provider=self.provider, model=self.model, live=bool(self.api_key))
 
     async def complete_json(
         self, *, system: str, user: str, max_tokens: int = 1024, temperature: float = 0.3
     ) -> LLMResult:
         """Return a JSON object parsed from the model output. Routes to the
         active provider; falls back to a deterministic stub without a key."""
-        if self._client is None:
+        if not self.api_key:
             return self._stub(system, user)
         if self.provider == "openai":
             return await self._complete_openai(system, user, max_tokens, temperature)
@@ -65,16 +57,19 @@ class LLMClient:
     ) -> LLMResult:
         # response_format=json_object forces strictly-parseable JSON (the prompt
         # already contains the word "JSON", which the API requires).
-        resp = await self._client.chat.completions.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system + _JSON_NUDGE},
-                {"role": "user", "content": user},
-            ],
-        )
+        from openai import AsyncOpenAI
+
+        async with AsyncOpenAI(api_key=self.api_key) as client:
+            resp = await client.chat.completions.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": system + _JSON_NUDGE},
+                    {"role": "user", "content": user},
+                ],
+            )
         text = resp.choices[0].message.content or "{}"
         usage = resp.usage
         return LLMResult(
@@ -87,17 +82,20 @@ class LLMClient:
     async def _complete_anthropic(
         self, system: str, user: str, max_tokens: int, temperature: float
     ) -> LLMResult:
+        from anthropic import AsyncAnthropic
+
         # Prefill the assistant turn with '{' so the response is reliably parseable.
-        message = await self._client.messages.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            system=system + _JSON_NUDGE,
-            messages=[
-                {"role": "user", "content": user},
-                {"role": "assistant", "content": "{"},
-            ],
-        )
+        async with AsyncAnthropic(api_key=self.api_key) as client:
+            message = await client.messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                system=system + _JSON_NUDGE,
+                messages=[
+                    {"role": "user", "content": user},
+                    {"role": "assistant", "content": "{"},
+                ],
+            )
         text = "{" + "".join(
             block.text for block in message.content if block.type == "text"
         )

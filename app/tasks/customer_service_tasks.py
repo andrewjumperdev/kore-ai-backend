@@ -140,9 +140,14 @@ def process_buffer_task(tenant_id: str, chat_id: str, message_id: str) -> None:
                     )
                     reply = result.get("reply") or ""
                     if reply:
-                        await evolution_channel.send(
-                            to=chat_id, body=reply, instance=instance_for_tenant(tenant_id)
-                        )
+                        # El envío no debe reventar la task (ni reintentar gastando
+                        # LLM): si WhatsApp no está conectado, logueamos y seguimos.
+                        try:
+                            await evolution_channel.send(
+                                to=chat_id, body=reply, instance=instance_for_tenant(tenant_id)
+                            )
+                        except Exception as send_exc:  # noqa: BLE001
+                            log.warning("cs.send_failed", chat_id=chat_id, error=str(send_exc)[:160])
 
             # Limpiamos el claim sólo tras responder OK (Fase 4). Si algo falla
             # antes, el claim queda y el retry de Dramatiq lo reprocesa.

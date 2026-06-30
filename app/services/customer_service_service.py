@@ -26,9 +26,13 @@ import redis.asyncio as aioredis
 
 from app.agents.runner import AgentRunner
 from app.core.config import settings
+from app.core.enums import LifecycleStage
 from app.core.logging import get_logger
-from app.integrations.calendar import calendar, compute_availability
+from app.models.contact import Contact
+from app.integrations.calendar import calendar, calendar_configured, compute_availability, resolve_calendar
 from app.integrations.email import email_channel
+from app.services.contact_service import ContactService
+from app.services.integration_settings import IntegrationSettings
 
 log = get_logger("customer_service")
 
@@ -41,13 +45,14 @@ class CustomerServiceService:
         self.session = session
         self.tenant_id = tenant_id
 
-    async def availability_text(self) -> str:
+    async def availability_text(self, cal_cfg: dict) -> str:
         now = datetime.now(timezone.utc)
         events = await calendar.list_events(
             time_min=now.isoformat(),
             time_max=(now + timedelta(days=30)).isoformat(),
+            config=cal_cfg,
         )
-        return compute_availability(events)
+        return compute_availability(events, tz=resolve_calendar(cal_cfg)["timezone"])
 
     async def respond(
         self,
@@ -59,15 +64,27 @@ class CustomerServiceService:
     ) -> dict:
         """Corre el agente sobre `text` (ya combinado) y ejecuta la reserva si el
         agente la confirmó. Devuelve {reply, intent, booking, booking_result}."""
-        availability = await self.availability_text()
+        store = IntegrationSettings(self.session, self.tenant_id)
+        cal_cfg = await store.get("calendar")
+        agent_cfg = await store.get("whatsapp_agent")
+        availability = await self.availability_text(cal_cfg)
         payload: dict = {
             "message": text,
             "push_name": push_name,
             "availability": availability,
             "channel": channel,
+            "agent_config": agent_cfg,
         }
+        # Registramos el historial de la conversación (para el detalle del lead).
+        conv_id = None
         if contact_id:
             payload["contact_id"] = str(contact_id)
+            contacts = ContactService(self.session, self.tenant_id)
+            conv = await contacts.get_or_create_conversation(contact_id, channel)
+            conv_id = conv.id
+            await contacts.record_message(
+                conversation_id=conv_id, direction="inbound", body=text, role="user"
+            )
 
         run = await AgentRunner(self.session, self.tenant_id).run("customer_service", payload)
         out = run.output or {}
@@ -75,8 +92,16 @@ class CustomerServiceService:
         reply = out.get("reply") or data.get("reply") or ""
         booking = data.get("booking") or {}
 
-        booking_result = await self._maybe_book(booking)
+        booking_result = await self._maybe_book(booking, cal_cfg)
         reply = self._adjust_reply(reply, booking_result, availability)
+
+        if contact_id:
+            await self._enrich_contact(contact_id, data)
+            if conv_id and reply:
+                await ContactService(self.session, self.tenant_id).record_message(
+                    conversation_id=conv_id, direction="outbound", body=reply,
+                    role="assistant", author_agent="customer_service",
+                )
 
         return {
             "reply": reply,
@@ -86,12 +111,52 @@ class CustomerServiceService:
             "run_id": str(run.id),
         }
 
+    # ── CRM: guardar los datos de calificación en el contacto ────────────────
+
+    async def _enrich_contact(self, contact_id: UUID, data: dict) -> None:
+        """Tras la calificación, vuelca al contacto del CRM lo que el agente capturó:
+        nombre, email, cargo/empresa/dolor (attributes) y la etapa del pipeline.
+        (La temperatura ya la persiste el runner desde result.temperature.)"""
+        contact = await self.session.get(Contact, contact_id)
+        if contact is None:
+            return
+        q = data.get("qualification") or {}
+        booking = data.get("booking") or {}
+
+        name = q.get("name") or booking.get("attendee_name")
+        email = q.get("email") or booking.get("attendee_email")
+        if name:
+            contact.full_name = name
+        if email:
+            contact.email = email
+
+        attrs = dict(contact.attributes or {})
+        for key in ("role", "company", "company_size", "pain"):
+            val = q.get(key) or (booking.get("attendee_company") if key == "company" else None)
+            if val:
+                attrs[key] = val
+        if attrs != (contact.attributes or {}):
+            contact.attributes = attrs
+
+        # Etapa del pipeline: reunión agendada → Propuesta; calificado → Calificado.
+        temp = data.get("temperature")
+        if booking.get("action") == "confirm":
+            contact.lifecycle_stage = LifecycleStage.IN_PROPOSAL
+        elif contact.lifecycle_stage == LifecycleStage.LEAD and (
+            temp in ("hot", "warm") or q.get("role") or q.get("company")
+        ):
+            contact.lifecycle_stage = LifecycleStage.QUALIFIED
+
+        contact.last_activity_at = datetime.now(timezone.utc)
+        await self.session.flush()
+        log.info("cs.contact_enriched", contact_id=str(contact_id), temp=temp, stage=contact.lifecycle_stage)
+
     # ── Booking (Fase 3) ─────────────────────────────────────────────────────
 
-    async def _maybe_book(self, booking: dict) -> dict | None:
+    async def _maybe_book(self, booking: dict, cal_cfg: dict) -> dict | None:
         if booking.get("action") != "confirm" or not booking.get("selected_slot"):
             return None
-        if not calendar.enabled:
+        if not calendar_configured(resolve_calendar(cal_cfg)):
             return {"status": "calendar_not_configured"}
 
         start = str(booking["selected_slot"])
@@ -121,7 +186,7 @@ class CustomerServiceService:
                 return {"status": "slot_taken"}
 
             # Re-verificación en vivo (pudo ocuparse desde que se propuso).
-            if not await calendar.is_slot_free(start=start, end=end_iso):
+            if not await calendar.is_slot_free(start=start, end=end_iso, config=cal_cfg):
                 return {"status": "slot_taken"}
 
             name = booking.get("attendee_name") or "Cliente"
@@ -133,7 +198,7 @@ class CustomerServiceService:
             )
             event = await calendar.create_event(
                 start=start, end=end_iso, summary=summary, description=description,
-                attendee_email=email or None, idempotency_key=idem,
+                attendee_email=email or None, idempotency_key=idem, config=cal_cfg,
             )
 
             # Confirmar_Reserva: marca permanente de idempotencia.

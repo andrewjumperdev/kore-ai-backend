@@ -1,0 +1,8 @@
+# Caddy provee HTTPS automático (Let's Encrypt) y proxya la API.
+# Cambiá api.tudominio.com por tu dominio real. Requisitos:
+#   - DNS A de api.tudominio.com → IP del VPS
+#   - Puertos 80 y 443 abiertos en el firewall del VPS
+
+api.tudominio.com {
+    reverse_proxy api:8000
+}

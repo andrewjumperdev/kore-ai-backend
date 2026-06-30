@@ -1,0 +1,120 @@
+# Producción: un solo archivo, todo en el VPS detrás de Caddy (HTTPS automático).
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Nada se publica al exterior salvo Caddy (80/443). La API, Postgres, Redis y
+# Evolution viven en la red interna de Docker; el backend llega a Evolution por
+# el nombre de servicio (http://evolution:8080) y Caddy proxya la API.
+
+x-backend: &backend
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  image: kore-backend:latest
+  env_file: .env
+  environment: &backend-env
+    KORE_POSTGRES_DSN: postgresql+asyncpg://kore:kore@db:5432/kore
+    KORE_REDIS_URL: redis://redis:6379/0
+  depends_on:
+    db: { condition: service_healthy }
+    redis: { condition: service_healthy }
+  restart: unless-stopped
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+
+  api:
+    <<: *backend
+    command: ["api"]
+    # sin 'ports': Caddy la proxya internamente (api:8000)
+
+  worker:
+    <<: *backend
+    command: ["worker"]
+
+  scheduler:
+    <<: *backend
+    command: ["scheduler"]
+
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kore
+      POSTGRES_PASSWORD: kore
+      POSTGRES_DB: kore
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kore"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  evolution-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: evolution
+      POSTGRES_PASSWORD: evolution
+      POSTGRES_DB: evolution
+    volumes:
+      - evolution_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evolution"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  evolution:
+    image: evoapicloud/evolution-api:latest
+    restart: unless-stopped
+    # sin 'ports': solo accesible desde la red interna (el backend la usa).
+    environment:
+      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
+      SERVER_URL: http://evolution:8080
+      DATABASE_ENABLED: "true"
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: postgresql://evolution:evolution@evolution-db:5432/evolution?schema=public
+      DATABASE_CONNECTION_CLIENT_NAME: evolution_kore
+      DATABASE_SAVE_DATA_INSTANCE: "true"
+      DATABASE_SAVE_DATA_NEW_MESSAGE: "true"
+      DATABASE_SAVE_MESSAGE_UPDATE: "true"
+      CACHE_REDIS_ENABLED: "true"
+      CACHE_REDIS_URI: redis://redis:6379/6
+      CACHE_REDIS_PREFIX_KEY: evolution
+      CACHE_LOCAL_ENABLED: "false"
+    depends_on:
+      evolution-db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    volumes:
+      - evolution_instances:/evolution/instances
+
+volumes:
+  pgdata:
+  redisdata:
+  evolution_pgdata:
+  evolution_instances:
+  caddy_data:
+  caddy_config:

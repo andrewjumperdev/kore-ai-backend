@@ -1,12 +1,9 @@
-"""Calendario (Google Calendar) — disponibilidad + reserva, apto para producción.
+"""Calendario (Google Calendar) — disponibilidad + reserva, config POR-TENANT.
 
-Auth: refresh-token OAuth (se mintea y cachea el access token; no vence) con
-fallback a un token estático para dev. `is_slot_free` re-verifica contra el
-calendario en vivo antes de agendar (anti-doble-reserva). `create_event` adjunta
-un Google Meet. Sin credenciales → skip seguro.
-
-`compute_availability` es el port compacto del algoritmo de FAUSTO: 14 días,
-horarios válidos L-V, fines de semana cerrados, descontando lo ocupado.
+La config (calendar_id + auth refresh-token o token estático + timezone) sale de
+`tenant_integrations` (provider 'calendar'), con fallback al .env. Cada método
+acepta `config`; el access token se mintea/cachea por refresh_token. Sin config
+hace skip seguro.
 """
 from __future__ import annotations
 
@@ -42,56 +39,66 @@ class CalendarEvent:
     raw: dict
 
 
+def resolve_calendar(config: dict | None) -> dict:
+    c = config or {}
+    return {
+        "calendar_id": c.get("calendar_id") or settings.google_calendar_id,
+        "client_id": c.get("client_id") or settings.google_client_id,
+        "client_secret": c.get("client_secret") or settings.google_client_secret,
+        "refresh_token": c.get("refresh_token") or settings.google_refresh_token,
+        "token": c.get("token") or settings.google_calendar_token,
+        "timezone": c.get("timezone") or settings.cs_timezone,
+    }
+
+
+def calendar_configured(cfg: dict) -> bool:
+    has_auth = bool(
+        cfg["token"] or (cfg["client_id"] and cfg["client_secret"] and cfg["refresh_token"])
+    )
+    return bool(cfg["calendar_id"] and has_auth)
+
+
 class CalendarProvider:
     name = "google"
 
     def __init__(self) -> None:
-        self._token: str | None = None
-        self._token_exp: float = 0.0
+        self._tokens: dict[str, tuple[str, float]] = {}  # refresh_token → (access, exp)
 
-    @property
-    def enabled(self) -> bool:
-        has_auth = bool(
-            settings.google_calendar_token
-            or (settings.google_client_id and settings.google_client_secret and settings.google_refresh_token)
-        )
-        return bool(settings.google_calendar_id and has_auth)
-
-    async def _access_token(self) -> str:
-        """Devuelve un access token válido. Mintea vía refresh-token y cachea hasta
-        ~1 min antes de expirar; si solo hay token estático, lo usa tal cual."""
-        if settings.google_refresh_token and settings.google_client_id:
-            if self._token and time.time() < self._token_exp - 60:
-                return self._token
+    async def _access_token(self, cfg: dict) -> str:
+        rt = cfg["refresh_token"]
+        if rt and cfg["client_id"]:
+            cached = self._tokens.get(rt)
+            if cached and time.time() < cached[1] - 60:
+                return cached[0]
             async with httpx.AsyncClient(timeout=20) as client:
                 resp = await client.post(
                     _TOKEN_URL,
                     data={
-                        "client_id": settings.google_client_id,
-                        "client_secret": settings.google_client_secret,
-                        "refresh_token": settings.google_refresh_token,
+                        "client_id": cfg["client_id"],
+                        "client_secret": cfg["client_secret"],
+                        "refresh_token": rt,
                         "grant_type": "refresh_token",
                     },
                 )
             if resp.status_code >= 300:
                 raise IntegrationError("Google token refresh failed", details={"body": resp.text[:300]})
             data = resp.json()
-            self._token = data["access_token"]
-            self._token_exp = time.time() + int(data.get("expires_in", 3600))
-            return self._token
-        return settings.google_calendar_token
+            self._tokens[rt] = (data["access_token"], time.time() + int(data.get("expires_in", 3600)))
+            return data["access_token"]
+        return cfg["token"]
 
-    async def _headers(self) -> dict:
-        return {"Authorization": f"Bearer {await self._access_token()}"}
+    async def _headers(self, cfg: dict) -> dict:
+        return {"Authorization": f"Bearer {await self._access_token(cfg)}"}
 
-    async def list_events(self, *, time_min: str, time_max: str) -> list[dict]:
-        if not self.enabled:
+    async def list_events(self, *, time_min: str, time_max: str, config: dict | None = None) -> list[dict]:
+        cfg = resolve_calendar(config)
+        if not calendar_configured(cfg):
             log.info("calendar.list_skipped_no_credentials")
             return []
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.get(
-                f"{_BASE}/calendars/{settings.google_calendar_id}/events",
-                headers=await self._headers(),
+                f"{_BASE}/calendars/{cfg['calendar_id']}/events",
+                headers=await self._headers(cfg),
                 params={
                     "timeMin": time_min, "timeMax": time_max,
                     "singleEvents": "true", "orderBy": "startTime", "maxResults": 250,
@@ -101,20 +108,19 @@ class CalendarProvider:
             raise IntegrationError("Google Calendar list failed", details={"body": resp.text[:300]})
         return resp.json().get("items", [])
 
-    async def is_slot_free(self, *, start: str, end: str) -> bool:
-        """Re-verifica en vivo que el rango no se solape con ningún evento."""
-        if not self.enabled:
-            return True  # sin calendario no bloqueamos el flujo
+    async def is_slot_free(self, *, start: str, end: str, config: dict | None = None) -> bool:
+        cfg = resolve_calendar(config)
+        if not calendar_configured(cfg):
+            return True
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.post(
                 f"{_BASE}/freeBusy",
-                headers=await self._headers(),
-                json={"timeMin": start, "timeMax": end, "items": [{"id": settings.google_calendar_id}]},
+                headers=await self._headers(cfg),
+                json={"timeMin": start, "timeMax": end, "items": [{"id": cfg["calendar_id"]}]},
             )
         if resp.status_code >= 300:
             raise IntegrationError("Google freeBusy failed", details={"body": resp.text[:300]})
-        cals = resp.json().get("calendars", {})
-        busy = cals.get(settings.google_calendar_id, {}).get("busy", [])
+        busy = resp.json().get("calendars", {}).get(cfg["calendar_id"], {}).get("busy", [])
         return len(busy) == 0
 
     async def create_event(
@@ -126,16 +132,18 @@ class CalendarProvider:
         description: str = "",
         attendee_email: str | None = None,
         idempotency_key: str | None = None,
+        config: dict | None = None,
     ) -> CalendarEvent:
-        if not self.enabled:
+        cfg = resolve_calendar(config)
+        if not calendar_configured(cfg):
             log.info("calendar.create_skipped_no_credentials", summary=summary)
             return CalendarEvent(None, None, None, "skipped", {"reason": "no_credentials"})
 
         body: dict = {
             "summary": summary,
             "description": description,
-            "start": {"dateTime": start, "timeZone": settings.cs_timezone},
-            "end": {"dateTime": end, "timeZone": settings.cs_timezone},
+            "start": {"dateTime": start, "timeZone": cfg["timezone"]},
+            "end": {"dateTime": end, "timeZone": cfg["timezone"]},
             "conferenceData": {
                 "createRequest": {
                     "requestId": idempotency_key or f"kore-{int(time.time()*1000)}",
@@ -148,8 +156,8 @@ class CalendarProvider:
 
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.post(
-                f"{_BASE}/calendars/{settings.google_calendar_id}/events",
-                headers=await self._headers(),
+                f"{_BASE}/calendars/{cfg['calendar_id']}/events",
+                headers=await self._headers(cfg),
                 params={"conferenceDataVersion": 1, "sendUpdates": "all"},
                 json=body,
             )
@@ -167,8 +175,9 @@ def _extract_meet(data: dict) -> str | None:
     return None
 
 
-def compute_availability(events: list[dict], *, days: int = 14) -> str:
+def compute_availability(events: list[dict], *, days: int = 14, tz: str | None = None) -> str:
     """Port compacto del 'Procesar Disponibilidad' de FAUSTO → bloque de texto."""
+    tz = tz or settings.cs_timezone
     busy: dict[str, set[str]] = {}
     for ev in events:
         start = (ev.get("start") or {}).get("dateTime")
@@ -188,13 +197,13 @@ def compute_availability(events: list[dict], *, days: int = 14) -> str:
             cur += timedelta(minutes=30)
 
     today = datetime.now(timezone.utc).date()
-    lines = [f"📅 DISPONIBILIDAD (próximos {days} días, hora {settings.cs_timezone}):", ""]
+    lines = [f"📅 DISPONIBILIDAD (próximos {days} días, hora {tz}):", ""]
     for i in range(days):
         d = today + timedelta(days=i)
-        dow = d.weekday()  # 0=Lunes
+        dow = d.weekday()
         name = _DAYS_ES[dow]
         ds = d.isoformat()
-        if dow >= 5:  # fin de semana
+        if dow >= 5:
             lines.append(f"🚫 {name} {ds}: CERRADO (fin de semana)")
             continue
         taken = busy.get(ds, set())

@@ -21,6 +21,7 @@ from app.tasks import (  # noqa: F401  (import to register actors)
     event_tasks,
     followup_tasks,
     orchestrator_tasks,
+    prospecting_tasks,
 )
 
 configure_logging(debug=os.getenv("KORE_DEBUG", "false").lower() == "true")
@@ -34,8 +35,15 @@ def start_scheduler() -> None:
 
     from app.tasks.billing_tasks import open_all_period_invoices
     from app.tasks.orchestrator_tasks import run_all_orchestrator_sweeps
+    from app.tasks.prospecting_tasks import run_prospecting_all
 
     scheduler = BlockingScheduler(timezone="UTC")
+    # Cold email: un batch por tenant cada hora (como el trigger del n8n).
+    scheduler.add_job(
+        lambda: run_prospecting_all.send(),
+        CronTrigger(minute=0),
+        id="hourly_prospecting",
+    )
     # Daily supervisor sweep: stale pipeline, overcontacted leads, metrics/alerts.
     scheduler.add_job(
         lambda: run_all_orchestrator_sweeps.send(),

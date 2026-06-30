@@ -11,6 +11,8 @@ from app.models.memory import LongTermMemory, SemanticMemory
 from app.models.billing import Subscription, Invoice
 from app.models.escalation import Escalation
 from app.models.agent_run import AgentRun
+from app.models.prospect import Prospect
+from app.models.tenant_integration import TenantIntegration
 
 __all__ = [
     "Base",
@@ -30,4 +32,6 @@ __all__ = [
     "Invoice",
     "Escalation",
     "AgentRun",
+    "Prospect",
+    "TenantIntegration",
 ]
