@@ -17,6 +17,9 @@ RUN pip install --upgrade pip && pip install ".[dev]"
 
 COPY . .
 
+# Aseguramos el bit de ejecución del entrypoint (git puede perderlo según el SO).
+RUN chmod +x /app/docker/entrypoint.sh
+
 RUN useradd --create-home appuser && chown -R appuser:appuser /app
 USER appuser
 

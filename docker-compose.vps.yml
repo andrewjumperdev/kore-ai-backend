@@ -1,0 +1,106 @@
+# Para VPS que YA tiene un panel/proxy ocupando 80/443 (EasyPanel, etc.).
+# No incluye Caddy: expone la API en el puerto 8000 del host.
+#   docker compose -f docker-compose.vps.yml up -d --build
+#
+# El webhook de Evolution → backend es INTERNO (http://api:8000), así que no
+# necesitás dominio para que WhatsApp entrante funcione. El dominio/HTTPS hace
+# falta solo para que el frontend (Vercel) llame al backend de forma segura.
+
+x-backend: &backend
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  image: kore-backend:latest
+  env_file: .env
+  environment: &backend-env
+    KORE_POSTGRES_DSN: postgresql+asyncpg://kore:kore@db:5432/kore
+    KORE_REDIS_URL: redis://redis:6379/0
+  depends_on:
+    db: { condition: service_healthy }
+    redis: { condition: service_healthy }
+  restart: unless-stopped
+
+services:
+  api:
+    <<: *backend
+    command: ["api"]
+    ports:
+      - "8000:8000"        # accesible en http://IP_DEL_VPS:8000
+
+  worker:
+    <<: *backend
+    command: ["worker"]
+
+  scheduler:
+    <<: *backend
+    command: ["scheduler"]
+
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kore
+      POSTGRES_PASSWORD: kore
+      POSTGRES_DB: kore
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kore"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  evolution-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: evolution
+      POSTGRES_PASSWORD: evolution
+      POSTGRES_DB: evolution
+    volumes:
+      - evolution_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evolution"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  evolution:
+    image: evoapicloud/evolution-api:latest
+    restart: unless-stopped
+    environment:
+      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
+      SERVER_URL: http://evolution:8080
+      DATABASE_ENABLED: "true"
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: postgresql://evolution:evolution@evolution-db:5432/evolution?schema=public
+      DATABASE_CONNECTION_CLIENT_NAME: evolution_kore
+      DATABASE_SAVE_DATA_INSTANCE: "true"
+      DATABASE_SAVE_DATA_NEW_MESSAGE: "true"
+      DATABASE_SAVE_MESSAGE_UPDATE: "true"
+      CACHE_REDIS_ENABLED: "true"
+      CACHE_REDIS_URI: redis://redis:6379/6
+      CACHE_REDIS_PREFIX_KEY: evolution
+      CACHE_LOCAL_ENABLED: "false"
+    depends_on:
+      evolution-db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    volumes:
+      - evolution_instances:/evolution/instances
+
+volumes:
+  pgdata:
+  redisdata:
+  evolution_pgdata:
+  evolution_instances:
