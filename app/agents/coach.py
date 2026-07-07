@@ -37,7 +37,13 @@ class AgentCoach(BaseAgent):
 
     def shape_result(self, ctx: AgentContext, data: dict) -> AgentResult:
         # Only enable modules if the diagnosis is complete (CRITICAL RULE).
-        complete = bool(data.get("diagnosis_complete", True))
+        # In the onboarding flow the client answered ALL diagnostic questions, so
+        # the diagnosis is complete by definition: `answers` in the payload is the
+        # authoritative signal. We do NOT let a non-deterministic LLM
+        # `diagnosis_complete: false` silently enable zero modules and leave
+        # `diagnosis_completed_at` unset (which traps the client in onboarding).
+        answered = bool(ctx.input.get("answers"))
+        complete = answered or bool(data.get("diagnosis_complete", True))
         modules = (
             data.get("enable_modules")
             or ctx.niche_config.get("default_modules", [m.value for m in Module])
