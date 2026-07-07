@@ -6,18 +6,20 @@ hay módulos). Es el único punto donde se configura el cliente.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.agents.runner import AgentRunner
 from app.api.deps import DbSession, TenantId
 from app.core.exceptions import NotFoundError, PolicyViolation
+from app.core.logging import get_logger
 from app.models.niche import Niche
 from app.models.tenant import Tenant
 from app.services.niche_service import NicheService
 
 router = APIRouter()
+log = get_logger("onboarding")
 
 # Nichos internos que el cliente NO elige (caso de uso propio de Andrew).
 _INTERNAL_NICHES = {"plaud-ar"}
@@ -100,9 +102,18 @@ async def diagnose(body: DiagnoseIn, tenant_id: TenantId, session: DbSession) ->
     message = "Respuestas del diagnóstico de onboarding:\n" + "\n".join(
         f"- {q}: {a}" for q, a in body.answers.items() if a
     )
-    run = await AgentRunner(session, tenant_id).run(
-        "coach", {"message": message, "answers": body.answers}
-    )
+    try:
+        run = await AgentRunner(session, tenant_id).run(
+            "coach", {"message": message, "answers": body.answers}
+        )
+    except (PolicyViolation, NotFoundError):
+        raise
+    except Exception as exc:  # noqa: BLE001 — surfaceamos la causa real (no un 500 opaco)
+        log.error("onboarding.diagnose_failed", error=str(exc), kind=type(exc).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail=f"El diagnóstico con IA falló: {type(exc).__name__}: {str(exc)[:220]}",
+        ) from exc
     out = run.output or {}
     data = out.get("output", {}) if isinstance(out.get("output"), dict) else {}
 
