@@ -64,3 +64,31 @@ def verify_hmac_signature(
     expected = hmac.new(secret.encode(), payload, getattr(hashlib, algo)).hexdigest()
     if not hmac.compare_digest(provided, expected):
         raise AuthenticationError("Invalid webhook signature")
+
+
+def tenant_capture_token(tenant_id: str) -> str:
+    """Token de captura propio de cada tenant, derivado de la clave del sistema.
+
+    La URL de captura se la damos al cliente para que la pegue en su formulario,
+    en un Zap o donde quiera — o sea que el token va a terminar en sistemas de
+    terceros. Con el secreto GLOBAL eso sería inaceptable: quien lo tuviera
+    podría inyectar leads en la cuenta de cualquier otro cliente con solo
+    conocer su UUID.
+
+    Derivado por HMAC, no almacenado: no hay tabla que mantener ni migración que
+    correr, y el token de un tenant no dice nada sobre el de otro. Rotar
+    KORE_SECRET_KEY los invalida a todos, lo cual es el comportamiento correcto.
+    """
+    return hmac.new(
+        settings.secret_key.encode(), f"lead-capture:{tenant_id}".encode(), hashlib.sha256
+    ).hexdigest()[:32]
+
+
+def verify_capture_token(request: Request, tenant_id: str) -> None:
+    """Valida el token de captura de un tenant (?token= o x-webhook-token)."""
+    provided = request.query_params.get("token") or request.headers.get("x-webhook-token")
+    if not provided or not secrets.compare_digest(
+        provided, tenant_capture_token(tenant_id)
+    ):
+        log.warning("webhook.capture_unauthorized", tenant=tenant_id)
+        raise AuthenticationError("Invalid capture token")

@@ -39,6 +39,15 @@ class QuotaExceeded(KoreError):
     code = "quota_exceeded"
 
 
+class ValidationError(KoreError):
+    """El pedido está mal formado. 422 y no 400: el problema no es el protocolo
+    sino el contenido, y `details` explica qué faltó — importa cuando quien
+    llama es un formulario ajeno o un Zap que el cliente configuró mal."""
+
+    status_code = 422
+    code = "validation_error"
+
+
 class RateLimitExceeded(KoreError):
     """Too many requests for the caller's bucket. Carries ``retry_after`` seconds."""
 
