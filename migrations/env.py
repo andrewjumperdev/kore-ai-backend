@@ -28,7 +28,17 @@ target_metadata = Base.metadata
 
 
 def do_run_migrations(connection: Connection) -> None:
+    # pgvector primero: las columnas de memoria semántica usan el tipo `vector`,
+    # así que la extensión tiene que existir antes de crear las tablas.
     connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    # Y se confirma ACÁ, aparte. En SQLAlchemy 2.0 ese execute abre una
+    # transacción implícita; si queda abierta, el begin_transaction() de Alembic
+    # detecta que ya hay una en curso y no toma el control de la confirmación.
+    # Resultado: la migración corre, loguea "Running upgrade", y al cerrar la
+    # conexión se descarta TODO — incluida la fila de alembic_version. La base
+    # queda vacía y la próxima corrida vuelve a "aplicar" lo mismo, en loop.
+    connection.commit()
+
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
@@ -36,6 +46,9 @@ def do_run_migrations(connection: Connection) -> None:
     )
     with context.begin_transaction():
         context.run_migrations()
+    # Commit explícito por la misma razón: no dependemos de que Alembic sea el
+    # dueño de la transacción para que el esquema quede escrito.
+    connection.commit()
 
 
 async def run_async_migrations() -> None:
