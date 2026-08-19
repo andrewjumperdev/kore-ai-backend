@@ -11,6 +11,7 @@ import dramatiq
 
 from app.core.context import tenant_context
 from app.core.database import session_scope
+from app.services.contact_service import ContactService
 from app.core.logging import get_logger
 from app.models.contact import Contact
 from app.models.tenant import Tenant
@@ -72,11 +73,22 @@ def run_followup_step(tenant_id: str, contact_id: str, step: int) -> None:
                 tenant = await session.get(Tenant, tid)
                 seq = await _niche_sequence(session, tenant, contact.temperature)
 
+                # El canal sale de la conversación del contacto, no de una
+                # constante: entró por Evolution, sale por Evolution. Fijarlo a
+                # mano hacía que el follow-up redactara mensajes que el canal
+                # descartaba en silencio por falta de credenciales.
+                channel = await ContactService(session, tid).outbound_channel(
+                    UUID(contact_id)
+                )
+                if channel is None:
+                    log.warning("followup.no_channel", contact_id=contact_id)
+                    return
+
                 runner = AgentRunner(session, tid)
                 run = await runner.run(
                     "followup",
                     {"contact_id": contact_id, "step": step, "trigger": "followup.step",
-                     "channel": "whatsapp"},
+                     "channel": channel},
                 )
                 # Count this outbound attempt (reset by an inbound reply handler).
                 contact.contact_attempts += 1

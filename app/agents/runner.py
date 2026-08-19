@@ -18,7 +18,7 @@ from app.agents.base import AgentResult
 from app.agents.context import AgentContext
 from app.agents.registry import get_agent
 from app.billing import quota
-from app.core.enums import LifecycleStage, Temperature
+from app.core.enums import EscalationReason, LifecycleStage, Temperature
 from app.core.logging import get_logger
 from app.events.bus import event_bus
 from app.events.types import EventName
@@ -246,6 +246,32 @@ class AgentRunner:
                 policy.check_outbound_allowed(agent_name, contact)
                 channel = get_channel(out.channel)
                 send_result = await channel.send(to=out.to or "", body=out.body)
+
+                # Un envío "skipped" es el canal diciendo "no tengo credenciales".
+                # Devolvía éxito y nadie se enteraba: el agente redactaba, se
+                # registraba message.sent, y el mensaje no salía. Se convierte en
+                # una escalación para que aparezca en la cola humana, que es
+                # donde la persona mira cuando algo necesita su intervención.
+                if send_result.status == "skipped":
+                    log.warning(
+                        "outbound.skipped",
+                        agent=agent_name,
+                        channel=out.channel,
+                        reason=send_result.raw.get("reason"),
+                    )
+                    await self.escalations.raise_escalation(
+                        reason=EscalationReason.TECH_BLOCK,
+                        title=f"No se pudo enviar por {out.channel}",
+                        executive_summary=(
+                            f"El agente {agent_name} preparó un mensaje pero el canal "
+                            f"'{out.channel}' no está conectado, así que no salió. "
+                            "Revisá Integraciones y reconectá el canal."
+                        ),
+                        source_agent=agent_name,
+                        contact_id=ctx.contact_id,
+                        payload={"channel": out.channel, "body": out.body},
+                    )
+
                 if ctx.conversation_id:
                     await self.contacts.record_message(
                         conversation_id=ctx.conversation_id,

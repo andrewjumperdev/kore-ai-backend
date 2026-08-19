@@ -28,12 +28,36 @@ async def list_contacts(
     stage: str | None = Query(default=None),
     limit: int = Query(default=200, le=500),
 ) -> list[ContactOut]:
-    stmt = select(Contact).where(Contact.tenant_id == tenant_id)
+    # Último mensaje entrante como subconsulta correlacionada, no como N+1: el
+    # dashboard muestra una lista de contactos con su último mensaje, y pedirlo
+    # por separado para cada uno serían decenas de requests por carga.
+    last_inbound = (
+        select(Message.body)
+        .join(Conversation, Conversation.id == Message.conversation_id)
+        .where(
+            Conversation.contact_id == Contact.id,
+            Message.direction == "inbound",
+        )
+        .order_by(Message.created_at.desc())
+        .limit(1)
+        .correlate(Contact)
+        .scalar_subquery()
+    )
+
+    stmt = select(Contact, last_inbound.label("last_message")).where(
+        Contact.tenant_id == tenant_id
+    )
     if stage:
         stmt = stmt.where(Contact.lifecycle_stage == stage)
     stmt = stmt.order_by(Contact.created_at.desc()).limit(limit)
-    rows = await session.scalars(stmt)
-    return [ContactOut.model_validate(c) for c in rows]
+
+    rows = await session.execute(stmt)
+    out: list[ContactOut] = []
+    for contact, last_message in rows.all():
+        item = ContactOut.model_validate(contact)
+        item.last_message = last_message
+        out.append(item)
+    return out
 
 
 @router.get("/{contact_id}/messages", response_model=list[MessageOut])

@@ -13,6 +13,7 @@ from app.models.escalation import Escalation
 from app.models.agent_run import AgentRun
 from app.models.prospect import Prospect
 from app.models.tenant_integration import TenantIntegration
+from app.models.content import ContentPiece
 
 __all__ = [
     "Base",
@@ -34,4 +35,5 @@ __all__ = [
     "AgentRun",
     "Prospect",
     "TenantIntegration",
+    "ContentPiece",
 ]

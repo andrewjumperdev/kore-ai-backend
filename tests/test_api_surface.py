@@ -195,6 +195,14 @@ def test_el_asistente_esta_montado(prod_client):
     assert resp.status_code != 404
 
 
+@pytest.mark.parametrize("metodo,ruta", [("GET", "/api/v1/content"), ("POST", "/api/v1/content")])
+def test_el_banco_de_contenido_exige_api_key(prod_client, metodo, ruta):
+    """El banco es contenido del negocio de un cliente: no puede leerse ni
+    escribirse sin su credencial."""
+    resp = prod_client.request(metodo, ruta, json={})
+    assert resp.status_code == 401
+
+
 def test_billing_admin_no_acepta_api_key_de_tenant(prod_client):
     """Un cliente no debe poder declararse pagado con su propia credencial."""
     resp = prod_client.post(

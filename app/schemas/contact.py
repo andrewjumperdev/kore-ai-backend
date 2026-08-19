@@ -18,6 +18,9 @@ class ContactOut(BaseModel):
     created_at: datetime
     # Cuándo vuelve a atender el agente. None = el agente está a cargo.
     paused_until: datetime | None = None
+    # Último mensaje ENTRANTE, para que la lista muestre qué pidió la persona
+    # sin abrir la conversación. None si todavía no escribió.
+    last_message: str | None = None
     model_config = {"from_attributes": True}
 
 

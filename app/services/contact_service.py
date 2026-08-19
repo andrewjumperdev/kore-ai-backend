@@ -113,3 +113,27 @@ class ContactService:
         self.session.add(msg)
         await self.session.flush()
         return msg
+
+    async def outbound_channel(self, contact_id: UUID) -> str | None:
+        """Canal por el que hay que contestarle a este contacto.
+
+        Se deriva de su conversación más reciente: si entró por Evolution, sale
+        por Evolution. Antes el follow-up fijaba "whatsapp" a mano, que es la
+        API oficial de Meta — un canal distinto del que usan los clientes (el QR
+        de Evolution). Sin credenciales de Meta el envío devolvía "skipped" en
+        silencio, así que el seguimiento redactaba mensajes que no salían nunca.
+
+        Hardcodear "evolution" en su lugar reproduciría el mismo error al revés
+        el día que alguien conecte la API oficial. El dato correcto es por dónde
+        vino la persona.
+        """
+        conv = await self.session.scalar(
+            select(Conversation)
+            .where(
+                Conversation.tenant_id == self.tenant_id,
+                Conversation.contact_id == contact_id,
+            )
+            .order_by(Conversation.created_at.desc())
+            .limit(1)
+        )
+        return conv.channel if conv else None
