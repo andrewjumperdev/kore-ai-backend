@@ -51,7 +51,16 @@ services:
   api:
     <<: *backend
     command: ["api"]
-    # sin 'ports': Caddy la proxya internamente (api:8000)
+    # sin 'ports': el reverse proxy la alcanza por la red interna (api:8000)
+    # Readiness real (Postgres + Redis), no un 200 estático: si la base se cae,
+    # el contenedor se marca unhealthy en vez de seguir aceptando tráfico que
+    # va a fallar. Solo en `api`: worker y scheduler no sirven HTTP.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health/ready"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }

@@ -45,10 +45,11 @@ USER appuser
 
 EXPOSE 8000
 
-# Readiness real (Postgres + Redis), no un 200 estático: si la base se cae, el
-# contenedor se marca unhealthy en vez de seguir aceptando tráfico que fallará.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -fsS http://localhost:8000/health/ready || exit 1
+# El healthcheck NO va acá. Esta imagen sirve para los tres roles (api, worker,
+# scheduler) y solo `api` levanta un servidor HTTP: definido a nivel de imagen,
+# worker y scheduler quedaban permanentemente "unhealthy". Un contenedor que
+# miente sobre su salud es peor que uno sin chequeo — tapa el problema real
+# cuando aparece. Va por servicio, en docker-compose.prod.yml.
 
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
 CMD ["api"]
