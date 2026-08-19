@@ -1,9 +1,15 @@
-# Producción: un solo archivo, todo en el VPS detrás de Caddy (HTTPS automático).
+# Producción: todo el stack en el VPS, detrás de un reverse proxy externo.
 #   docker compose -f docker-compose.prod.yml up -d --build
 #
-# Nada se publica al exterior salvo Caddy (80/443). La API, Postgres, Redis y
-# Evolution viven en la red interna de Docker; el backend llega a Evolution por
-# el nombre de servicio (http://evolution:8080) y Caddy proxya la API.
+# **Ningún servicio publica puertos al host.** Postgres, Redis, Evolution y el
+# worker solo existen dentro de la red interna; el backend llega a Evolution por
+# el nombre de servicio (http://evolution:8080). La única que se asoma es la API,
+# y lo hace uniéndose a la red del proxy (`proxy`, más abajo) — no abriendo un
+# puerto. Así no hay forma de alcanzar la base desde internet ni por error.
+#
+# El proxy lo pone otro stack (acá, Traefik vía EasyPanel) porque ya tenía
+# tomados el 80 y el 443. Si en tu servidor no hay ninguno, volvé a agregar un
+# servicio Caddy con esos puertos y el Caddyfile del repo.
 #
 # Las contraseñas salen del .env (ver .env.production.example). Antes estaban
 # escritas acá: aunque la red sea interna, un secreto versionado en git es un
@@ -24,19 +30,6 @@ x-backend: &backend
   restart: unless-stopped
 
 services:
-  caddy:
-    image: caddy:2
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      - api
-
   # Corre las migraciones y termina. La API espera a que salga con éxito, así
   # nunca sirve tráfico contra un esquema viejo. Es un servicio aparte a
   # propósito: migrar desde el arranque de la API haría que los N workers de
@@ -65,6 +58,12 @@ services:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
       migrate: { condition: service_completed_successfully }
+    # Dos redes: la interna del stack (Postgres, Redis, Evolution) y la del
+    # reverse proxy. Solo la API se asoma a la red del proxy — la base y el
+    # worker no tienen por qué ser alcanzables desde ahí.
+    networks:
+      - default
+      - proxy
 
   worker:
     <<: *backend
@@ -163,10 +162,18 @@ services:
     volumes:
       - evolution_instances:/evolution/instances
 
+# La red del reverse proxy ya existe y la administra otro stack (EasyPanel /
+# Traefik). `external: true` significa "usala, no la crees ni la borres".
+# En otro servidor, cambiá el nombre o quitá el bloque `networks` de `api` y
+# volvé a poner un proxy propio.
+networks:
+  default:
+  proxy:
+    external: true
+    name: ${PROXY_NETWORK:-easypanel}
+
 volumes:
   pgdata:
   redisdata:
   evolution_pgdata:
   evolution_instances:
-  caddy_data:
-  caddy_config:
