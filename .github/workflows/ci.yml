@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Un push nuevo sobre la misma rama cancela el run anterior: no tiene sentido
+# pagar CI por un commit que ya quedó obsoleto.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check app scripts tests
+
+      - name: Tests
+        run: pytest -q
+
+      # Regresión de seguridad: la app DEBE negarse a arrancar en producción con
+      # secretos por default. Si esto pasa, el fail-fast dejó de funcionar y un
+      # deploy inseguro podría levantar sin que nadie se entere.
+      - name: Verificar el fail-fast de producción
+        env:
+          KORE_ENV: production
+          KORE_SECRET_KEY: dev-secret-change-me
+        run: |
+          if python -c "from app.core.config import Settings; Settings()" 2>/dev/null; then
+            echo "::error::La config de producción aceptó un secret_key inseguro"
+            exit 1
+          fi
+          echo "OK: la config insegura fue rechazada"
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Que la imagen compile es parte del contrato: un Dockerfile roto no se
+      # descubre en el deploy.
+      - name: Build de la imagen
+        run: docker build -f docker/Dockerfile -t kore-backend:ci .
+
+      - name: Verificar que el entrypoint arranca
+        run: |
+          docker run --rm --entrypoint python kore-backend:ci -c "import app.main; print('import ok')"

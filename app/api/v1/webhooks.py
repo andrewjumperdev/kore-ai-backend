@@ -1,6 +1,12 @@
 """Inbound webhooks (Capa 01 — captura). Channel webhooks turn provider payloads
 into normalized inbound messages → record + emit message.received → the chain
 routes the reply. Plaud exports are ingested into the CRM as structured data.
+
+**Todos los webhooks se autentican** con un secreto compartido (ver
+app.core.webhook_auth): la URL lleva el tenant_id, así que sin secreto bastaría
+con adivinar un UUID para inyectar mensajes falsos en el CRM de un cliente y
+disparar respuestas del LLM a nuestra costa. Además cada uno está limitado por
+tasa a nivel de tenant.
 """
 from __future__ import annotations
 
@@ -9,9 +15,11 @@ from uuid import UUID
 from fastapi import APIRouter, Request
 
 from app.api.deps import DbSession
+from app.core.config import settings
 from app.core.context import set_current_tenant
-from app.core.exceptions import AuthenticationError
 from app.core.logging import get_logger
+from app.core.ratelimit import hit
+from app.core.webhook_auth import verify_webhook_token
 from app.events.bus import event_bus
 from app.events.types import EventName
 from app.integrations.evolution import evolution_channel, instance_for_tenant
@@ -25,9 +33,19 @@ router = APIRouter()
 log = get_logger("webhooks")
 
 
+async def _authorize(request: Request, provider: str, tenant_id: UUID) -> None:
+    """Autentica el webhook y aplica el límite de tasa por tenant."""
+    verify_webhook_token(request, provider)
+    await hit(
+        f"webhook:{provider}:{tenant_id}",
+        limit=settings.rate_limit_webhook_per_minute,
+    )
+
+
 @router.post("/plaud/{tenant_id}")
 async def plaud_export(tenant_id: UUID, request: Request, session: DbSession):
     """Capa 01: ingest a Plaud recording (transcript + summary + action items)."""
+    await _authorize(request, "plaud", tenant_id)
     set_current_tenant(tenant_id)
     payload = await request.json()
     export = PlaudExport.from_payload(payload)
@@ -40,16 +58,7 @@ async def evolution_inbound(tenant_id: UUID, request: Request):
     """Atención al cliente (FAUSTO): recibe WhatsApp vía Evolution, transcribe el
     audio si hace falta y lo manda al buffer de 8s (Fase 1+2). El agente responde
     desde la task del buffer."""
-    from app.core.config import settings
-
-    # Verificación opcional del webhook (producción): ?token= o header x-webhook-token.
-    expected = settings.evolution_webhook_token
-    if expected:
-        provided = request.query_params.get("token") or request.headers.get("x-webhook-token")
-        if provided != expected:
-            log.warning("webhook.evolution_unauthorized", tenant=str(tenant_id))
-            raise AuthenticationError("Invalid webhook token")
-
+    await _authorize(request, "evolution", tenant_id)
     set_current_tenant(tenant_id)
     payload = await request.json()
     messages = evolution_channel.parse_webhook(payload)
@@ -86,8 +95,10 @@ async def evolution_inbound(tenant_id: UUID, request: Request):
 async def inbound_message(channel: str, tenant_id: UUID, request: Request, session: DbSession):
     """Receive an inbound message from a channel provider.
 
-    NOTE: verify the provider signature before trusting the payload (omitted for
-    brevity — wire it into get_channel(...).verify())."""
+    Autenticado con el secreto compartido genérico. Un proveedor que firme el
+    payload (estilo Meta) debería verificar la firma sobre el cuerpo crudo con
+    ``app.core.webhook_auth.verify_hmac_signature``, que es más fuerte."""
+    await _authorize(request, channel, tenant_id)
     set_current_tenant(tenant_id)
     payload = await request.json()
     messages = get_channel(channel).parse_webhook(payload)

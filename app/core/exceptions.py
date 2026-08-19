@@ -39,6 +39,29 @@ class QuotaExceeded(KoreError):
     code = "quota_exceeded"
 
 
+class RateLimitExceeded(KoreError):
+    """Too many requests for the caller's bucket. Carries ``retry_after`` seconds."""
+
+    status_code = 429
+    code = "rate_limit_exceeded"
+
+    def __init__(self, message: str | None = None, *, retry_after: int = 60):
+        self.retry_after = retry_after
+        super().__init__(message or "Too many requests", details={"retry_after": retry_after})
+
+
+class ConfigurationError(KoreError):
+    """A required secret/setting is missing, so the endpoint cannot serve safely.
+
+    503 (not 500) on purpose: the request is well-formed, the deployment is
+    incomplete. Used to fail *closed* — e.g. a webhook with no shared secret
+    configured refuses the payload instead of trusting it.
+    """
+
+    status_code = 503
+    code = "misconfigured"
+
+
 class IntegrationError(KoreError):
     status_code = 502
     code = "integration_error"

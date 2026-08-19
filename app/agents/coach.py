@@ -36,18 +36,38 @@ class AgentCoach(BaseAgent):
         )
 
     def shape_result(self, ctx: AgentContext, data: dict) -> AgentResult:
-        # Only enable modules if the diagnosis is complete (CRITICAL RULE).
-        # In the onboarding flow the client answered ALL diagnostic questions, so
-        # the diagnosis is complete by definition: `answers` in the payload is the
-        # authoritative signal. We do NOT let a non-deterministic LLM
-        # `diagnosis_complete: false` silently enable zero modules and leave
-        # `diagnosis_completed_at` unset (which traps the client in onboarding).
-        answered = bool(ctx.input.get("answers"))
-        complete = answered or bool(data.get("diagnosis_complete", True))
-        modules = (
-            data.get("enable_modules")
-            or ctx.niche_config.get("default_modules", [m.value for m in Module])
-        ) if complete else []
+        """Traduce la salida del LLM, decidiendo si esto configura o solo responde.
+
+        El Coach se invoca desde DOS lugares y hacen cosas muy distintas:
+
+        * ``POST /onboarding/diagnose`` — manda ``answers`` con las respuestas al
+          cuestionario del nicho. Esto SÍ configura al cliente.
+        * El chat de ARIA en el dashboard — manda solo ``message``. Es una
+          consulta: tiene que responder y NO tocar nada.
+
+        La presencia de ``answers`` es la única señal que distingue los dos casos,
+        y por eso es la que manda. No se delega en el ``diagnosis_complete`` del
+        modelo por dos motivos opuestos y ambos reales: si dice ``false`` de más,
+        deja al cliente trabado en el onboarding con cero módulos; si dice
+        ``true`` de más —el default— convierte un "hola" del chat en un
+        diagnóstico que PISA el perfil del negocio, los módulos habilitados y la
+        fecha de diagnóstico. Ese segundo caso borraba justo lo que el cliente
+        pagó en el setup fee.
+        """
+        is_diagnosis = bool(ctx.input.get("answers"))
+        if not is_diagnosis:
+            # Consulta: se responde y se sale sin efectos. `facts` va vacío a
+            # propósito — el runner los persiste en memoria de largo plazo, y una
+            # charla suelta no debería sedimentar como si fuera el diagnóstico.
+            return AgentResult(
+                agent=self.name,
+                output=data,
+                reply=data.get("summary") or data.get("reply"),
+            )
+
+        modules = data.get("enable_modules") or ctx.niche_config.get(
+            "default_modules", [m.value for m in Module]
+        )
         return AgentResult(
             agent=self.name,
             output=data,

@@ -15,6 +15,7 @@ from app.agents.orchestrator import OrchestratorAgent
 from app.agents.content import ContentAgent
 from app.agents.customer_service import AgentCustomerService
 from app.agents.icebreaker import IcebreakerAgent
+from app.agents.assistant import AssistantAgent
 
 __all__ = [
     "AgentResult",
@@ -35,4 +36,5 @@ __all__ = [
     "ContentAgent",
     "AgentCustomerService",
     "IcebreakerAgent",
+    "AssistantAgent",
 ]

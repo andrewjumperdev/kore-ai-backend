@@ -1,24 +1,47 @@
 from __future__ import annotations
 
 import secrets
+from uuid import UUID
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Depends, status
+from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
-from app.api.deps import DbSession
+from app.api.deps import AdminAuth, DbSession, ProvisioningAuth
+from app.core.config import settings
 from app.core.exceptions import NotFoundError
+from app.core.ratelimit import RateLimit
 from app.core.security import generate_api_key
 from app.models.tenant import Tenant, TenantApiKey
-from app.schemas.tenant import TenantCreate, TenantCreated
+from app.schemas.tenant import TenantCreate, TenantCreated, TenantOut
 from app.services.niche_service import NicheService
 
 router = APIRouter()
 
 
-@router.post("", response_model=TenantCreated, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=TenantCreated,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[
+        ProvisioningAuth,
+        Depends(
+            RateLimit(
+                "tenants:create",
+                settings.rate_limit_tenant_create_per_hour,
+                window=3600,
+            )
+        ),
+    ],
+)
 async def create_tenant(body: TenantCreate, session: DbSession) -> TenantCreated:
     """Provision a new client as an instance of a niche (P2) and issue its first
     API key (shown once).
+
+    **Autenticado con el secreto de provisioning** (header
+    ``x-provisioning-secret``), que solo conoce el BFF del frontend: este
+    endpoint emite una API key válida, así que abierto sería una puerta directa
+    a gastar nuestro presupuesto de LLM.
 
     Slug creation is collision-proof: the frontend derives the slug from the
     user id (``t-<uid8>``), so a leftover/orphan tenant from a previous failed
@@ -62,3 +85,27 @@ async def create_tenant(body: TenantCreate, session: DbSession) -> TenantCreated
         business_profile=tenant.business_profile,
         api_key=raw_key,
     )
+
+
+class TenantActiveIn(BaseModel):
+    tenant_id: UUID
+    is_active: bool
+
+
+@router.post("/admin/active", response_model=TenantOut, dependencies=[AdminAuth])
+async def set_tenant_active(body: TenantActiveIn, session: DbSession) -> TenantOut:
+    """Enciende o apaga TODA la cuenta de un cliente.
+
+    Es el freno de último recurso: con `is_active=False` ningún agente corre
+    para ese tenant (el guard vive en app.orchestrator.policy). Sirve para
+    cortar por lo sano si el sistema se está portando mal con los clientes
+    finales de alguien, sin tener que apagar la plataforma entera.
+
+    Operación de operador, no del cliente: un tenant no puede reactivarse solo.
+    """
+    tenant = await session.get(Tenant, body.tenant_id)
+    if tenant is None:
+        raise NotFoundError("Tenant not found")
+    tenant.is_active = body.is_active
+    await session.flush()
+    return TenantOut.model_validate(tenant)

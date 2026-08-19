@@ -49,9 +49,22 @@ class MetricsService:
             select(Subscription).where(Subscription.tenant_id == self.tenant_id)
         )
 
+        # Semana anterior: sin un punto de comparación, "12 leads" no dice si
+        # el sistema está funcionando mejor o peor que la semana pasada.
+        leads_prev_7d = await self._count(
+            select(func.count(Lead.id)).where(
+                Lead.tenant_id == self.tenant_id,
+                Lead.created_at >= at - timedelta(days=14),
+                Lead.created_at < week_ago,
+            )
+        )
+        leads_daily = await self._leads_daily(at, days=14)
+
         cold_share = temp_dist.get(Temperature.COLD, 0) / total_contacts
         snapshot = {
             "leads_new_7d": leads_7d,
+            "leads_prev_7d": leads_prev_7d,
+            "leads_daily": leads_daily,
             "temperature_distribution": {k: v for k, v in temp_dist.items()},
             "auto_classification_rate": round(classified / total_contacts, 3),
             "cold_share": round(cold_share, 3),
@@ -75,6 +88,30 @@ class MetricsService:
             alerts.append({"metric": "cold_share", "issue": "> 60% frío",
                            "action": "revisar fuente de captación"})
         return alerts
+
+    async def _leads_daily(self, at: datetime, *, days: int) -> list[dict]:
+        """Leads por día de los últimos `days` días, con los días vacíos en cero.
+
+        Rellenar los ceros es imprescindible: un GROUP BY devuelve solo los días
+        que tuvieron algo, y graficar esa serie tal cual comprime el tiempo y
+        dibuja una tendencia que no existe.
+        """
+        start = (at - timedelta(days=days - 1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        rows = await self.session.execute(
+            select(func.date(Lead.created_at).label("d"), func.count(Lead.id))
+            .where(Lead.tenant_id == self.tenant_id, Lead.created_at >= start)
+            .group_by("d")
+        )
+        counts = {str(d): int(n) for d, n in rows.all()}
+        return [
+            {
+                "date": (day := (start + timedelta(days=i)).date().isoformat()),
+                "count": counts.get(day, 0),
+            }
+            for i in range(days)
+        ]
 
     async def _temperature_distribution(self) -> dict[str, int]:
         rows = await self.session.execute(

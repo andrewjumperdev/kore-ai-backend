@@ -80,6 +80,12 @@ class BillingEngine:
         sub = await self.subscription(tenant_id)
         if sub is None:
             raise NotFoundError("No subscription for tenant")
+        # Idempotente: Stripe reentrega el mismo evento ante cualquier duda de
+        # red, y DEAL_CLOSED dispara el Onboarding Agent — emitirlo dos veces le
+        # mandaría al cliente la secuencia de bienvenida duplicada.
+        if sub.setup_paid_at is not None:
+            log.info("billing.setup_paid_noop", tenant_id=str(tenant_id))
+            return sub
         sub.setup_paid_at = at
         sub.status = "active"
         sub.started_at = at
@@ -107,6 +113,21 @@ class BillingEngine:
             payload={"plan": sub.plan, "mrr_cents": sub.mrr_cents}, tenant_id=tenant_id,
         )
         log.info("billing.setup_paid", tenant_id=str(tenant_id))
+        return sub
+
+    async def mark_past_due(self, tenant_id: UUID) -> Subscription | None:
+        """Un cobro recurrente falló. No cancelamos: Stripe reintenta varios días
+        y el cliente puede regularizar. ``past_due`` alimenta la alerta de churn."""
+        sub = await self.subscription(tenant_id)
+        if sub is None or sub.status == "canceled":
+            return sub
+        sub.status = "past_due"
+        await event_bus.emit(
+            self.session, EventName.SUBSCRIPTION_UPDATED, source="billing",
+            payload={"plan": sub.plan, "mrr_cents": sub.mrr_cents, "status": "past_due"},
+            tenant_id=tenant_id,
+        )
+        log.warning("billing.past_due", tenant_id=str(tenant_id))
         return sub
 
     async def open_period_invoice(self, tenant_id: UUID, at: datetime | None = None) -> Invoice | None:

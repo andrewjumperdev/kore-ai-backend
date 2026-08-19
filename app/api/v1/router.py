@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.v1 import (
     agents,
+    assistant,
     billing,
     contacts,
     customer_service,
@@ -23,6 +24,7 @@ api_router.include_router(tenants.router, prefix="/tenants", tags=["tenants"])
 api_router.include_router(leads.router, prefix="/leads", tags=["leads"])
 api_router.include_router(contacts.router, prefix="/contacts", tags=["contacts"])
 api_router.include_router(agents.router, prefix="/agents", tags=["agents"])
+api_router.include_router(assistant.router, prefix="/assistant", tags=["assistant"])
 api_router.include_router(
     customer_service.router, prefix="/customer-service", tags=["customer-service"]
 )

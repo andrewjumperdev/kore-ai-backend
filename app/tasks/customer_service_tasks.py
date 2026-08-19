@@ -98,6 +98,7 @@ def process_buffer_task(tenant_id: str, chat_id: str, message_id: str) -> None:
     async def _run() -> None:
         import redis.asyncio as aioredis
 
+        from app.core.exceptions import PolicyViolation
         from app.integrations.evolution import evolution_channel, instance_for_tenant
         from app.services.contact_service import ContactService
         from app.services.customer_service_service import CustomerServiceService
@@ -131,23 +132,32 @@ def process_buffer_task(tenant_id: str, chat_id: str, message_id: str) -> None:
             push_name = msgs[-1].get("push_name")
 
             tid = UUID(tenant_id)
-            with tenant_context(tid):
-                async with session_scope() as session:
-                    contacts = ContactService(session, tid)
-                    contact, _ = await contacts.get_or_create(phone=chat_id, full_name=push_name)
-                    result = await CustomerServiceService(session, tid).respond(
-                        text=combined, contact_id=contact.id, push_name=push_name, channel="evolution",
-                    )
-                    reply = result.get("reply") or ""
-                    if reply:
-                        # El envío no debe reventar la task (ni reintentar gastando
-                        # LLM): si WhatsApp no está conectado, logueamos y seguimos.
-                        try:
-                            await evolution_channel.send(
-                                to=chat_id, body=reply, instance=instance_for_tenant(tenant_id)
-                            )
-                        except Exception as send_exc:  # noqa: BLE001
-                            log.warning("cs.send_failed", chat_id=chat_id, error=str(send_exc)[:160])
+            try:
+                with tenant_context(tid):
+                    async with session_scope() as session:
+                        contacts = ContactService(session, tid)
+                        contact, _ = await contacts.get_or_create(phone=chat_id, full_name=push_name)
+                        result = await CustomerServiceService(session, tid).respond(
+                            text=combined, contact_id=contact.id, push_name=push_name, channel="evolution",
+                        )
+                        reply = result.get("reply") or ""
+                        if reply:
+                            # El envío no debe reventar la task (ni reintentar gastando
+                            # LLM): si WhatsApp no está conectado, logueamos y seguimos.
+                            try:
+                                await evolution_channel.send(
+                                    to=chat_id, body=reply, instance=instance_for_tenant(tenant_id)
+                                )
+                            except Exception as send_exc:  # noqa: BLE001
+                                log.warning("cs.send_failed", chat_id=chat_id, error=str(send_exc)[:160])
+            except PolicyViolation as stop:
+                # Cuenta apagada o conversación tomada por una persona. Es un
+                # estado ESPERADO, no una falla: si lo dejáramos propagar,
+                # Dramatiq reintentaría 3 veces y volvería a gastar LLM en algo
+                # que el operador pidió expresamente que no ocurra.
+                await r.delete(claim_key)
+                log.info("cs.halted", chat_id=chat_id, reason=stop.message)
+                return
 
             # Limpiamos el claim sólo tras responder OK (Fase 4). Si algo falla
             # antes, el claim queda y el retry de Dramatiq lo reprocesa.

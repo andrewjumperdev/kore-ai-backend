@@ -59,7 +59,13 @@ class LLMClient:
         # already contains the word "JSON", which the API requires).
         from openai import AsyncOpenAI
 
-        async with AsyncOpenAI(api_key=self.api_key) as client:
+        # timeout + max_retries explícitos: sin ellos, una llamada colgada retiene
+        # un worker de gunicorn hasta su propio timeout y tumba la concurrencia.
+        async with AsyncOpenAI(
+            api_key=self.api_key,
+            timeout=settings.llm_timeout_seconds,
+            max_retries=settings.llm_max_retries,
+        ) as client:
             resp = await client.chat.completions.create(
                 model=self.model,
                 max_tokens=max_tokens,
@@ -85,7 +91,11 @@ class LLMClient:
         from anthropic import AsyncAnthropic
 
         # Prefill the assistant turn with '{' so the response is reliably parseable.
-        async with AsyncAnthropic(api_key=self.api_key) as client:
+        async with AsyncAnthropic(
+            api_key=self.api_key,
+            timeout=settings.llm_timeout_seconds,
+            max_retries=settings.llm_max_retries,
+        ) as client:
             message = await client.messages.create(
                 model=self.model,
                 max_tokens=max_tokens,

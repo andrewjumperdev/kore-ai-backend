@@ -32,6 +32,18 @@ NICHES = [
                 "¿Cuántos prospectos nuevos manejás por semana?",
                 "¿Qué canal usás más para hablar con clientes (WhatsApp, email, llamadas)?",
             ],
+            "coach_examples": {
+                "¿Qué tipo de reuniones grabás con Plaud y con qué frecuencia?":
+                    "Reuniones con clientes y demos, unas 8 por semana",
+                "¿Cuál es tu ciclo de venta típico (días desde primer contacto a cierre)?":
+                    "Entre 15 y 30 días desde el primer contacto",
+                "¿Dónde se te escapan hoy los seguimientos?":
+                    "Después de la primera reunión: anoto y no vuelvo a llamar",
+                "¿Cuántos prospectos nuevos manejás por semana?":
+                    "Unos 10 o 12",
+                "¿Qué canal usás más para hablar con clientes (WhatsApp, email, llamadas)?":
+                    "WhatsApp para todo; el mail casi no lo abren",
+            },
             "qualification_signals": {
                 "hot": ["pide demo", "pregunta precio", "menciona urgencia"],
                 "warm": ["pide info", "compara opciones"],
@@ -62,6 +74,18 @@ NICHES = [
                 "¿Cuál es el ticket promedio de una unidad?",
                 "¿Qué objeción escuchás más seguido y cómo la respondés hoy?",
             ],
+            "coach_examples": {
+                "¿Qué tipo de desarrollos manejás (residencial, comercial, lotes)?":
+                    "Residencial en pozo, edificios de 2 y 3 ambientes",
+                "¿Cómo captás compradores/inversores hoy?":
+                    "Instagram y cartel en obra; también referidos",
+                "¿Cuánto dura tu ciclo desde lead hasta reserva?":
+                    "Dos o tres meses, según el avance de obra",
+                "¿Cuál es el ticket promedio de una unidad?":
+                    "Alrededor de USD 90.000",
+                "¿Qué objeción escuchás más seguido y cómo la respondés hoy?":
+                    "Miedo a comprar en pozo; les muestro obras ya entregadas",
+            },
             "qualification_signals": {
                 "hot": ["pide cochera/unidad específica", "consulta financiación", "quiere visitar"],
                 "warm": ["pide brochure", "consulta ubicación"],
@@ -91,6 +115,18 @@ NICHES = [
                 "¿Cuánto tarda en promedio de consulta inicial a contratación?",
                 "¿Qué información necesitás SIEMPRE antes de tomar un caso?",
             ],
+            "coach_examples": {
+                "¿Qué áreas del derecho/consultoría atendés?":
+                    "Laboral y sucesiones, sobre todo",
+                "¿Cómo llegan hoy tus consultas (referidos, web, redes)?":
+                    "Casi todo por referidos; algo de Google",
+                "¿Qué tipo de caso es tu cliente ideal?":
+                    "Despidos con antigüedad, que justifican el juicio",
+                "¿Cuánto tarda en promedio de consulta inicial a contratación?":
+                    "Una o dos semanas si el caso es claro",
+                "¿Qué información necesitás SIEMPRE antes de tomar un caso?":
+                    "Fecha del hecho, documentación y si ya consultó otro estudio",
+            },
             "qualification_signals": {
                 "hot": ["caso urgente", "pide reunión", "menciona plazos legales"],
                 "warm": ["consulta concreta", "pide honorarios"],
@@ -121,6 +157,18 @@ NICHES = [
                 "¿Trabajás solo/a o con un equipo? ¿Cuántas personas?",
                 "¿Cuál es tu mayor cuello de botella: captar, responder o cerrar?",
             ],
+            "coach_examples": {
+                "¿Operás venta, alquiler o ambos, y en qué zonas?":
+                    "Venta y alquiler en Palermo, Villa Crespo y Chacarita",
+                "¿Qué tipo de propiedades manejás principalmente?":
+                    "Departamentos usados de 2 y 3 ambientes",
+                "¿De dónde vienen tus leads hoy (portales, redes, referidos)?":
+                    "Zonaprop y Argenprop, más algo de Instagram",
+                "¿Trabajás solo/a o con un equipo? ¿Cuántas personas?":
+                    "Somos tres: yo y dos asesores",
+                "¿Cuál es tu mayor cuello de botella: captar, responder o cerrar?":
+                    "Responder: llegan muchas consultas y no damos abasto",
+            },
             "qualification_signals": {
                 "hot": ["quiere visitar", "pregunta precio", "tiene presupuesto definido", "menciona zona puntual"],
                 "warm": ["pide info de una propiedad", "compara opciones"],
@@ -150,6 +198,18 @@ NICHES = [
                 "¿Cuál es el principal motivo por el que un interesado NO se inscribe?",
                 "¿Qué datos necesitás de un interesado para hacer seguimiento?",
             ],
+            "coach_examples": {
+                "¿Qué programas/cursos ofrecés y a qué público?":
+                    "Diplomaturas online para profesionales de 25 a 40",
+                "¿Cómo llegan hoy los interesados (web, ferias, redes)?":
+                    "Meta Ads y la web; algo de boca en boca",
+                "¿Cuándo son tus períodos de inscripción?":
+                    "Marzo y agosto, con preinscripción un mes antes",
+                "¿Cuál es el principal motivo por el que un interesado NO se inscribe?":
+                    "El precio, y no saber si le sirve para trabajar",
+                "¿Qué datos necesitás de un interesado para hacer seguimiento?":
+                    "Nombre, WhatsApp y qué programa le interesa",
+            },
             "qualification_signals": {
                 "hot": ["pregunta cómo inscribirse", "consulta fechas/precios", "pide entrevista"],
                 "warm": ["pide plan de estudios", "compara programas"],

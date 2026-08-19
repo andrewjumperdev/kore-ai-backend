@@ -130,8 +130,11 @@ class EvolutionAdmin:
 
     def webhook_url(self, tenant_id: str) -> str:
         url = f"{settings.public_base_url.rstrip('/')}/api/v1/webhooks/evolution/{tenant_id}"
-        if settings.evolution_webhook_token:
-            url += f"?token={settings.evolution_webhook_token}"
+        # El token efectivo puede venir del genérico (WEBHOOK_TOKEN) o del
+        # específico; sin él, el endpoint rechaza el POST en producción.
+        token = settings.webhook_token_for("evolution")
+        if token:
+            url += f"?token={token}"
         return url
 
     async def ensure_instance(self, tenant_id: str) -> dict:

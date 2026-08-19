@@ -1,14 +1,26 @@
 from __future__ import annotations
 
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+
+class TenantRef(BaseModel):
+    """El operador siempre nombra al tenant explícitamente: estos endpoints no
+    derivan el tenant de la auth (ver app/api/v1/billing.py)."""
+
+    tenant_id: UUID
 
 
 class SubscriptionCreate(BaseModel):
     plan: str = Field(description="e.g. constructoras-growth")
     setup_fee_cents: int = Field(ge=0, default=0)
     mrr_cents: int = Field(ge=0, default=0)
+
+
+class AdminSubscriptionCreate(SubscriptionCreate, TenantRef):
+    pass
 
 
 class BillingSummaryOut(BaseModel):

@@ -3,6 +3,8 @@ entran por WhatsApp — vive acá con su temperatura (🔴🟡🟢) y su etapa d
 vida. Es la fuente de verdad del pipeline del dashboard."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Query
@@ -10,11 +12,13 @@ from sqlalchemy import select
 
 from app.api.deps import DbSession, TenantId
 from app.core.exceptions import NotFoundError
+from app.core.logging import get_logger
 from app.models.contact import Contact
 from app.models.conversation import Conversation, Message
 from app.schemas.contact import ContactOut, ContactUpdate, MessageOut
 
 router = APIRouter()
+log = get_logger("contacts")
 
 
 @router.get("", response_model=list[ContactOut])
@@ -60,4 +64,45 @@ async def update_contact(
     if body.temperature is not None:
         contact.temperature = body.temperature
     await session.flush()
+    return ContactOut.model_validate(contact)
+
+
+@router.post("/{contact_id}/pause", response_model=ContactOut)
+async def pause_contact(
+    contact_id: UUID,
+    tenant_id: TenantId,
+    session: DbSession,
+    hours: Annotated[int, Query(ge=1, le=8760)] = 24,
+) -> ContactOut:
+    """Freno de emergencia por conversación: una persona toma el control.
+
+    A partir de acá el agente deja de responderle a este contacto — el guard
+    está en app.orchestrator.policy, así que aplica a TODOS los caminos (la
+    respuesta de WhatsApp, las cadenas por evento y el disparo manual desde la
+    API), no solo al que se nos ocurra tapar acá.
+
+    Es una pausa con vencimiento, no un apagado permanente: lo más común es
+    "dejame atender yo esta charla", y una pausa que hay que acordarse de
+    levantar termina siendo un contacto abandonado en silencio.
+    """
+    contact = await session.get(Contact, contact_id)
+    if contact is None or contact.tenant_id != tenant_id:
+        raise NotFoundError("Contact not found")
+    contact.paused_until = datetime.now(timezone.utc) + timedelta(hours=hours)
+    await session.flush()
+    log.info("contact.paused", contact_id=str(contact_id), hours=hours)
+    return ContactOut.model_validate(contact)
+
+
+@router.post("/{contact_id}/resume", response_model=ContactOut)
+async def resume_contact(
+    contact_id: UUID, tenant_id: TenantId, session: DbSession
+) -> ContactOut:
+    """Devuelve la conversación al agente."""
+    contact = await session.get(Contact, contact_id)
+    if contact is None or contact.tenant_id != tenant_id:
+        raise NotFoundError("Contact not found")
+    contact.paused_until = None
+    await session.flush()
+    log.info("contact.resumed", contact_id=str(contact_id))
     return ContactOut.model_validate(contact)

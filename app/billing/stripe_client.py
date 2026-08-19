@@ -6,7 +6,7 @@ from __future__ import annotations
 import stripe
 
 from app.core.config import settings
-from app.core.exceptions import IntegrationError
+from app.core.exceptions import AuthenticationError, ConfigurationError, IntegrationError
 from app.core.logging import get_logger
 
 log = get_logger("stripe")
@@ -24,7 +24,9 @@ class StripeClient:
             customer = stripe.Customer.create(email=email, name=name)
             return customer["id"]
         except stripe.StripeError as exc:  # pragma: no cover - network
-            raise IntegrationError("Stripe customer create failed", details={"error": str(exc)})
+            raise IntegrationError(
+                "Stripe customer create failed", details={"error": str(exc)}
+            ) from exc
 
     async def create_subscription(self, *, customer_id: str, price_id: str) -> str | None:
         if not self.is_configured():
@@ -35,7 +37,9 @@ class StripeClient:
             )
             return sub["id"]
         except stripe.StripeError as exc:  # pragma: no cover - network
-            raise IntegrationError("Stripe subscription failed", details={"error": str(exc)})
+            raise IntegrationError(
+                "Stripe subscription failed", details={"error": str(exc)}
+            ) from exc
 
     async def create_setup_invoice(self, *, customer_id: str, amount_cents: int) -> str | None:
         """One-time setup charge as a standalone invoice item + invoice."""
@@ -49,15 +53,31 @@ class StripeClient:
             invoice = stripe.Invoice.create(customer=customer_id, auto_advance=True)
             return invoice["id"]
         except stripe.StripeError as exc:  # pragma: no cover - network
-            raise IntegrationError("Stripe setup invoice failed", details={"error": str(exc)})
+            raise IntegrationError(
+                "Stripe setup invoice failed", details={"error": str(exc)}
+            ) from exc
 
     def verify_webhook(self, payload: bytes, signature: str) -> dict:
+        """Valida la firma de Stripe sobre el cuerpo CRUDO y devuelve el evento.
+
+        Fail-closed: sin secreto configurado no se acepta el evento, porque
+        cualquiera podría postear un `invoice.paid` falso y activarse la cuenta.
+        """
+        if not settings.stripe_webhook_secret:
+            raise ConfigurationError("STRIPE_WEBHOOK_SECRET no configurado")
         try:
             return stripe.Webhook.construct_event(
                 payload, signature, settings.stripe_webhook_secret
             )
-        except (ValueError, stripe.SignatureVerificationError) as exc:
-            raise IntegrationError("Invalid Stripe signature", details={"error": str(exc)})
+        except stripe.SignatureVerificationError as exc:
+            log.warning("stripe.bad_signature")
+            raise AuthenticationError(
+                "Invalid Stripe signature", details={"error": str(exc)}
+            ) from exc
+        except ValueError as exc:
+            raise IntegrationError(
+                "Malformed Stripe payload", details={"error": str(exc)}
+            ) from exc
 
 
 stripe_client = StripeClient()

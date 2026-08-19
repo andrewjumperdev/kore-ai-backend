@@ -4,6 +4,8 @@ from fastapi import APIRouter
 
 from app.agents.runner import AgentRunner
 from app.api.deps import DbSession, TenantId
+from app.core.config import settings
+from app.core.ratelimit import hit
 from app.schemas.agent import AgentEnqueued, AgentRunOut, AgentRunRequest
 
 router = APIRouter()
@@ -15,7 +17,13 @@ async def run_agent(body: AgentRunRequest, tenant_id: TenantId, session: DbSessi
     structured output; ``mode=async`` enqueues it on the worker.
 
     All policy (P1–P8), temperature changes, module enabling (Coach), and human
-    escalations (P3) are handled inside the runner — never in the endpoint."""
+    escalations (P3) are handled inside the runner — never in the endpoint.
+
+    Limitado por tasa **por tenant**: cada corrida cuesta una llamada al LLM, así
+    que es el endpoint más caro de la API. El techo mensual de tokens lo aplica
+    el runner (app.billing.quota), que cubre también el camino asíncrono."""
+    await hit(f"agents:run:{tenant_id}", limit=settings.rate_limit_agent_per_minute)
+
     if body.mode == "async":
         from app.tasks.agent_tasks import run_agent_task
 

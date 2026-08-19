@@ -30,10 +30,23 @@ class NicheBrief(BaseModel):
     name: str
 
 
+class CoachQuestion(BaseModel):
+    """Pregunta del diagnóstico con su ejemplo de respuesta.
+
+    El ejemplo baja muchísimo la fricción: preguntas como "¿dónde se te escapan
+    los seguimientos?" son claras para quien escribió el nicho y ambiguas para
+    quien las lee por primera vez. Puede venir vacío — el nicho es la fuente y
+    no todos tienen ejemplo cargado.
+    """
+
+    text: str
+    example: str = ""
+
+
 class OnboardingInfo(BaseModel):
     niche_slug: str | None
     niche_name: str | None
-    questions: list[str]
+    questions: list[CoachQuestion]
     diagnosis_completed: bool
     enabled_modules: list[str]
     niches: list[NicheBrief]  # nichos seleccionables
@@ -56,7 +69,15 @@ class DiagnoseOut(BaseModel):
 
 async def _build_info(session, tenant: Tenant) -> OnboardingInfo:
     niche = await NicheService(session).get(tenant.niche_id) if tenant.niche_id else None
-    questions = list((niche.config or {}).get("coach_questions", [])) if niche else []
+    config = (niche.config or {}) if niche else {}
+    # Los ejemplos se indexan por el texto de la pregunta, no por posición: si
+    # alguien reordena las preguntas del nicho, el ejemplo simplemente falta en
+    # vez de quedar pegado a la pregunta equivocada.
+    examples = config.get("coach_examples", {})
+    questions = [
+        CoachQuestion(text=q, example=examples.get(q, ""))
+        for q in config.get("coach_questions", [])
+    ]
     rows = await session.scalars(
         select(Niche).where(Niche.slug.notin_(_INTERNAL_NICHES)).order_by(Niche.priority)
     )
@@ -124,3 +145,33 @@ async def diagnose(body: DiagnoseIn, tenant_id: TenantId, session: DbSession) ->
         industry=data.get("industry"),
         enabled_modules=(tenant.enabled_modules or []) if tenant else [],
     )
+
+
+@router.post("/reset", response_model=OnboardingInfo)
+async def reset_diagnosis(tenant_id: TenantId, session: DbSession) -> OnboardingInfo:
+    """Deja al cliente en condiciones de rehacer su diagnóstico.
+
+    Hace falta para tres situaciones reales: el rubro elegido no era el correcto,
+    el negocio cambió, o el perfil quedó corrupto. Sin esto el cliente quedaba en
+    un callejón sin salida — ``select_niche`` bloquea el cambio de nicho una vez
+    completado el diagnóstico, y no había forma de volver atrás.
+
+    **Deja al sistema sin operar hasta que se rehaga el diagnóstico**: se vacían
+    los módulos habilitados, así que los agentes dejan de responder (P6 y el gate
+    de módulos). Es a propósito — seguir operando con una configuración que el
+    propio cliente acaba de invalidar es peor que parar. Se revierte completando
+    el onboarding de nuevo, que son dos minutos.
+
+    El nicho se conserva para no obligar a reelegirlo, pero vuelve a ser
+    editable: el gate de ``select_niche`` mira ``diagnosis_completed_at``.
+    """
+    tenant = await session.get(Tenant, tenant_id)
+    if tenant is None:
+        raise NotFoundError("Tenant not found")
+
+    tenant.diagnosis_completed_at = None
+    tenant.business_profile = {}
+    tenant.enabled_modules = []
+    await session.flush()
+    log.info("onboarding.reset", tenant_id=str(tenant_id))
+    return await _build_info(session, tenant)

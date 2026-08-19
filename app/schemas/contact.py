@@ -16,6 +16,8 @@ class ContactOut(BaseModel):
     attributes: dict = {}
     last_activity_at: datetime | None
     created_at: datetime
+    # Cuándo vuelve a atender el agente. None = el agente está a cargo.
+    paused_until: datetime | None = None
     model_config = {"from_attributes": True}
 
 

@@ -6,6 +6,8 @@ the single source of truth for "what an agent is and is not allowed to do".
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from app.core.enums import Module, Temperature
 from app.core.exceptions import PolicyViolation
 from app.models.contact import Contact
@@ -37,7 +39,9 @@ AGENT_MODULE = {
 }
 
 # Agents exempt from the niche requirement (platform-level supervisors).
-NICHE_EXEMPT = {"orchestrator"}
+# El asistente del panel responde sobre el producto, no le habla a un lead:
+# tiene que servir desde el minuto cero, antes de que el cliente elija rubro.
+NICHE_EXEMPT = {"orchestrator", "assistant"}
 
 
 def requires_human_review(agent_name: str) -> bool:
@@ -48,6 +52,30 @@ def requires_human_review(agent_name: str) -> bool:
 
 def check_pre_run(agent_name: str, tenant: Tenant, contact: Contact | None) -> None:
     """Validate invariants BEFORE an agent runs."""
+    # ── Freno de emergencia ──────────────────────────────────────────
+    # Va PRIMERO, antes que cualquier otra regla: si el operador apagó la
+    # cuenta, ninguna otra consideración importa. Sin esto, `is_active` era un
+    # campo decorativo — se podía poner en False y los agentes seguían
+    # respondiéndole a los clientes finales igual.
+    if not tenant.is_active:
+        raise PolicyViolation(
+            "cuenta pausada por el operador — ningún agente corre",
+            details={"tenant": str(tenant.id)},
+        )
+
+    # Pausa por conversación: la persona a cargo tomó el control de este
+    # contacto y el agente no debe volver a meterse hasta que se reanude.
+    if contact is not None and contact.paused_until is not None:
+        now = datetime.now(timezone.utc)
+        until = contact.paused_until
+        if until.tzinfo is None:  # filas viejas guardadas sin tz
+            until = until.replace(tzinfo=timezone.utc)
+        if until > now:
+            raise PolicyViolation(
+                "conversación pausada — la atiende una persona",
+                details={"contact": str(contact.id), "paused_until": until.isoformat()},
+            )
+
     # P2/P8 — niche is mandatory; nothing runs niche-less.
     if agent_name not in NICHE_EXEMPT and tenant.niche_id is None:
         raise PolicyViolation(

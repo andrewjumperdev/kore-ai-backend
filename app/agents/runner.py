@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.base import AgentResult
 from app.agents.context import AgentContext
 from app.agents.registry import get_agent
+from app.billing import quota
 from app.core.enums import LifecycleStage, Temperature
 from app.core.logging import get_logger
 from app.events.bus import event_bus
@@ -50,13 +51,13 @@ class AgentRunner:
 
         # ── P1/P2/P6 + module guards BEFORE running ──────────────────
         policy.check_pre_run(agent_name, tenant, contact)
+        # Cortafuegos de costos: aquí pasan TODAS las corridas (API sync, worker
+        # async, cadenas disparadas por eventos), así que es el único punto donde
+        # el techo de tokens se puede aplicar de verdad.
+        await quota.check(self.tenant_id)
 
         niche_config = await self._niche_config(tenant)
-        conversation = None
-        if contact is not None:
-            conversation = await self.contacts.get_or_create_conversation(
-                contact.id, payload.get("channel", "whatsapp")
-            )
+        conversation_id = await self._resolve_conversation(payload, contact)
 
         ctx = AgentContext(
             tenant_id=self.tenant_id,
@@ -66,7 +67,7 @@ class AgentRunner:
             niche_slug=await self._niche_slug(tenant),
             niche_config=niche_config,
             contact_id=contact.id if contact else None,
-            conversation_id=conversation.id if conversation else None,
+            conversation_id=conversation_id,
             current_temperature=contact.temperature if contact else Temperature.UNSET,
             input=payload,
         )
@@ -76,7 +77,7 @@ class AgentRunner:
             tenant_id=self.tenant_id,
             agent=agent_name,
             contact_id=contact.id if contact else None,
-            conversation_id=conversation.id if conversation else None,
+            conversation_id=conversation_id,
             input=payload,
         )
         try:
@@ -99,10 +100,35 @@ class AgentRunner:
         self.session.add(run)
         await self.session.flush()
 
+        await quota.record(self.tenant_id, result.input_tokens + result.output_tokens)
+
         await self._apply_side_effects(ctx, agent_name, result, tenant, contact)
         return run
 
     # ── helpers ──────────────────────────────────────────────────────
+
+    async def _resolve_conversation(self, payload: dict, contact: Contact | None) -> UUID | None:
+        """Hilo al que pertenece este turno.
+
+        Con contacto, es la conversación del CRM. Sin contacto, se acepta un
+        ``conversation_id`` explícito del payload: lo usa el asistente del panel,
+        que conversa con el DUEÑO de la cuenta y por lo tanto no tiene —ni debe
+        tener— una fila en `contacts`. Meterlo al CRM lo contaría como lead y
+        ensuciaría la temperatura del pipeline.
+        """
+        if contact is not None:
+            conversation = await self.contacts.get_or_create_conversation(
+                contact.id, payload.get("channel", "whatsapp")
+            )
+            return conversation.id
+        raw = payload.get("conversation_id")
+        if not raw:
+            return None
+        try:
+            return UUID(str(raw))
+        except ValueError:
+            log.warning("runner.bad_conversation_id", value=str(raw)[:60])
+            return None
 
     async def _load_contact(self, payload: dict) -> Contact | None:
         cid = payload.get("contact_id")
@@ -194,8 +220,22 @@ class AgentRunner:
                 key,
                 value if isinstance(value, dict) else {"value": value},
             )
+        if ctx.conversation_id:
+            # El turno del usuario PRIMERO. Antes solo se guardaba la respuesta
+            # del agente, así que `recent_turns` devolvía media conversación —
+            # un monólogo del agente sin las preguntas que lo motivaron. Se
+            # escribe acá y no antes de correr para que el agente no vea su
+            # propio mensaje entrante duplicado (ya le llega por TRIGGER).
+            if ctx.user_message:
+                await ctx.memory.short.append_turn(
+                    ctx.conversation_id, "user", ctx.user_message
+                )
+            if result.reply:
+                await ctx.memory.short.append_turn(
+                    ctx.conversation_id, "assistant", result.reply
+                )
+
         if result.reply and ctx.conversation_id:
-            await ctx.memory.short.append_turn(ctx.conversation_id, "assistant", result.reply)
             await ctx.memory.semantic.index(
                 "conversation", result.reply, subject_id=str(ctx.contact_id)
             )
