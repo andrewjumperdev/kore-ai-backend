@@ -64,6 +64,25 @@ services:
     networks:
       - default
       - proxy
+    # Ruteo del reverse proxy, declarado acá y no en su config: así viaja con el
+    # código y se revisa en el diff. El proxy tiene exposedByDefault=false, o sea
+    # que sin `traefik.enable` este contenedor sería invisible para él.
+    labels:
+      traefik.enable: "true"
+      # Con dos redes hay que decirle por cuál alcanzarnos; si no, elige mal.
+      traefik.docker.network: ${PROXY_NETWORK:-easypanel}
+      # HTTP solo redirige. `@file` apunta al middleware que ya define el proxy
+      # en su config dinámica — no lo redefinimos.
+      traefik.http.routers.kore-api.rule: Host(`${KORE_API_DOMAIN:?falta KORE_API_DOMAIN en .env}`)
+      traefik.http.routers.kore-api.entrypoints: http
+      traefik.http.routers.kore-api.middlewares: redirect-to-https@file
+      # HTTPS con Let's Encrypt: el certificado se emite y renueva solo.
+      traefik.http.routers.kore-api-secure.rule: Host(`${KORE_API_DOMAIN}`)
+      traefik.http.routers.kore-api-secure.entrypoints: https
+      traefik.http.routers.kore-api-secure.tls: "true"
+      traefik.http.routers.kore-api-secure.tls.certresolver: letsencrypt
+      # El puerto interno del contenedor, no uno publicado: nada sale al host.
+      traefik.http.services.kore-api.loadbalancer.server.port: "8000"
 
   worker:
     <<: *backend

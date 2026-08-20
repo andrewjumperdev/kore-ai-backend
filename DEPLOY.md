@@ -54,7 +54,25 @@ nano Caddyfile                 # cambiá api.tudominio.com por tu dominio
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-Caddy saca el certificado HTTPS solo (puede tardar ~1 min). Verificá:
+### Si el servidor ya tiene un reverse proxy
+
+Con EasyPanel, Coolify o similar, los puertos 80/443 ya están ocupados y **no se
+levanta un proxy propio**: la API se une a la red del proxy existente y declara
+su ruta con labels (ver `docker-compose.prod.yml`). Solo hay que setear
+`KORE_API_DOMAIN` y `PROXY_NETWORK` en el `.env`.
+
+Comprobá que el proxy tomó la ruta:
+
+```bash
+# el proxy alcanza la API por la red interna
+TRAEFIK=$(docker ps --format '{{.Names}}' | grep -i traefik | head -1)
+docker exec "$TRAEFIK" wget -qO- http://kore-ai-backend-api-1:8000/health
+
+# y desde afuera, con certificado
+curl -s https://api.tudominio.com/health
+```
+
+El certificado tarda hasta ~1 min la primera vez. Verificá:
 ```bash
 # 200 = API arriba y con Postgres + Redis sanos
 curl -s https://api.tudominio.com/health/ready
