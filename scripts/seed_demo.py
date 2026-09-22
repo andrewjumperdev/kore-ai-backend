@@ -29,11 +29,48 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.database import session_scope
+from app.memory.long_term import LongTermMemoryStore
 from app.models.contact import Contact
+from app.models.crm import Deal
+from app.models.memory import LongTermMemory
 from app.models.conversation import Conversation, Message
 from app.models.tenant import Tenant
 
 MARCA = "demo"
+
+# Oportunidades: (título, etapa, monto en centavos, días desde que se creó,
+# días que tardó en cerrar o None si sigue abierta).
+#
+# Los montos y las etapas están elegidos para que el embudo de Analytics se vea
+# como un embudo real —muchas arriba, pocas abajo— y para que haya al menos una
+# ganada con cierre, que es lo único que hace que el ciclo de venta promedio
+# devuelva un número en vez de "—".
+NEGOCIOS = [
+    ("Depto 2 amb. Gorriti",      "negotiation", 18_000_000, 22, None),
+    ("Casa Nordelta",             "proposal",    32_000_000, 15, None),
+    ("PH Belgrano",               "proposal",    21_000_000,  9, None),
+    ("Depto Caballito",           "qualified",    9_500_000,  6, None),
+    ("Loft Villa Crespo",         "qualified",   13_000_000,  4, None),
+    ("Depto Almagro",             "new",           None,      2, None),  # sin monto aún
+    ("Duplex Vicente López",      "new",         11_000_000,  1, None),
+    ("Depto Palermo Soho",        "won",         16_500_000, 40, 12),
+    ("Oficina Microcentro",       "won",         24_000_000, 55, 19),
+    ("Depto Chacarita",           "lost",         7_800_000, 30, 21),
+]
+
+# Hechos con procedencia, para que la pestaña "Rastro" del contacto muestre la
+# diferencia entre lo que la persona dijo y lo que el agente dedujo. Sin los
+# tres tipos, no se ve que el sistema los distingue.
+HECHOS = [
+    ("presupuesto", {"maximo_usd": 180000}, "stated", "qualification",
+     "Mi tope son 180 mil, no puedo estirarme más"),
+    ("forma_de_pago", {"modo": "contado"}, "stated", "qualification",
+     "Lo pago al contado, no necesito crédito"),
+    ("urgencia", {"nivel": "alta", "razon": "vence alquiler"}, "inferred", "sdr",
+     "Necesito mudarme antes de fin de mes"),
+    ("zona_preferida", {"barrios": ["Palermo", "Villa Crespo"]}, "imported", "capture:web",
+     None),
+]
 
 # Minutos de espera + el último mensaje entrante. Los tiempos están elegidos para
 # que se vean los tres estados del dashboard: recién llegado, esperando, y
@@ -103,8 +140,53 @@ async def sembrar(slug: str | None) -> None:
                 )
             )
 
-        print(f"✅ {len(CONTACTOS)} contactos de prueba en '{tenant.slug}'.")
-        print("   Abrí el dashboard: los tiles, la tabla y el pipeline ya tienen datos.")
+        # ── Oportunidades ───────────────────────────────────────────
+        # Se cuelgan de los primeros contactos para que el detalle muestre algo
+        # coherente: la persona que pregunta por Gorriti tiene esa oportunidad.
+        primeros = await session.scalars(
+            select(Contact)
+            .where(Contact.tenant_id == tenant.id,
+                   Contact.attributes[MARCA].astext == "true")
+            .limit(len(NEGOCIOS))
+        )
+        contactos = list(primeros)
+
+        for i, (titulo, etapa, monto, dias_edad, dias_cierre) in enumerate(NEGOCIOS):
+            creado = ahora - timedelta(days=dias_edad)
+            session.add(
+                Deal(
+                    tenant_id=tenant.id,
+                    contact_id=contactos[i].id if i < len(contactos) else None,
+                    title=titulo,
+                    stage=etapa,
+                    amount_cents=monto,
+                    currency="USD",
+                    created_at=creado,
+                    # El cierre se calcula desde la creación, no desde hoy: es
+                    # lo que hace que el ciclo de venta promedio dé el número
+                    # que dicen los datos y no uno inventado por el seeder.
+                    closed_at=(creado + timedelta(days=dias_cierre)) if dias_cierre else None,
+                    lost_reason="Compró en otra inmobiliaria" if etapa == "lost" else None,
+                    expected_close_date=(creado + timedelta(days=45)).date(),
+                )
+            )
+
+        # ── Hechos con procedencia ──────────────────────────────────
+        if contactos:
+            store = LongTermMemoryStore(session, tenant.id)
+            for key, value, basis, source, evidencia in HECHOS:
+                await store.remember(
+                    "contact", str(contactos[0].id), key, value,
+                    basis=basis, source=source, evidence=evidencia,
+                    observed_at=ahora - timedelta(hours=3),
+                )
+
+        print(f"✅ {len(CONTACTOS)} contactos, {len(NEGOCIOS)} oportunidades y "
+              f"{len(HECHOS)} hechos en '{tenant.slug}'.")
+        print("   Dashboard: tiles, tabla y pipeline con datos.")
+        print("   Analytics: embudo, valor del pipeline y ciclo de venta.")
+        print(f"   CRM > {contactos[0].full_name if contactos else 'un contacto'} > "
+              "pestaña Rastro: los hechos con su procedencia.")
 
 
 async def limpiar() -> None:
@@ -112,11 +194,40 @@ async def limpiar() -> None:
         rows = await session.scalars(
             select(Contact).where(Contact.attributes[MARCA].astext == "true")
         )
-        n = 0
-        for contact in rows:
+        contactos = list(rows)
+        ids = [c.id for c in contactos]
+
+        # Las oportunidades de esos contactos caen por el ON DELETE CASCADE del
+        # FK, pero las que quedaron sin contacto (las últimas de la lista) no
+        # tienen de quién colgar: se borran por título.
+        n_deals = 0
+        titulos = [t for t, *_ in NEGOCIOS]
+        huerfanas = await session.scalars(select(Deal).where(Deal.title.in_(titulos)))
+        for deal in huerfanas:
+            await session.delete(deal)
+            n_deals += 1
+
+        # Los hechos no tienen FK al contacto (scope_id es texto), así que hay
+        # que borrarlos a mano o quedan colgados apuntando a un contacto que ya
+        # no existe.
+        n_hechos = 0
+        if ids:
+            claves = [k for k, *_ in HECHOS]
+            hechos = await session.scalars(
+                select(LongTermMemory).where(
+                    LongTermMemory.scope == "contact",
+                    LongTermMemory.scope_id.in_([str(i) for i in ids]),
+                    LongTermMemory.key.in_(claves),
+                )
+            )
+            for h in hechos:
+                await session.delete(h)
+                n_hechos += 1
+
+        for contact in contactos:
             await session.delete(contact)
-            n += 1
-        print(f"🧹 {n} contactos de prueba eliminados.")
+        print(f"🧹 {len(contactos)} contactos, {n_deals} oportunidades y "
+              f"{n_hechos} hechos de prueba eliminados.")
 
 
 def main() -> None:
