@@ -7,6 +7,10 @@ inventados y en la base de un cliente serían basura indistinguible de sus datos
     python -m scripts.seed_demo              # el tenant más nuevo creado por la app
     python -m scripts.seed_demo t-c8799302   # uno puntual, por slug
     python -m scripts.seed_demo --limpiar    # borra lo que sembró
+    python -m scripts.seed_demo --probar-procedencia   # verifica el guard de hechos
+
+Sembrar es re-ejecutable: borra lo de la corrida anterior antes de sembrar de
+nuevo, en la misma transacción.
 
 Todo lo que crea lleva `demo: true` en `attributes`, así el borrado es exacto y
 nunca toca un contacto real.
@@ -108,6 +112,16 @@ async def sembrar(slug: str | None) -> None:
             )
             raise SystemExit(1)
 
+        # Re-ejecutable: borra lo sembrado antes de volver a sembrar. Sin esto,
+        # la segunda corrida choca contra la restricción única del teléfono y
+        # explota con un traceback de 200 líneas — para una herramienta de
+        # desarrollo que uno corre varias veces por sesión, es inaceptable.
+        # Va en la MISMA transacción que el sembrado: si algo falla a mitad,
+        # el borrado se revierte y no te quedás sin los datos anteriores.
+        previos, _, _ = await _borrar(session)
+        if previos:
+            print(f"♻️  {previos} contactos de una corrida anterior reemplazados.")
+
         ahora = datetime.now(timezone.utc)
         for nombre, tel, temp, minutos, datos, mensaje in CONTACTOS:
             visto = ahora - timedelta(minutes=minutos)
@@ -189,45 +203,120 @@ async def sembrar(slug: str | None) -> None:
               "pestaña Rastro: los hechos con su procedencia.")
 
 
+async def _borrar(session) -> tuple[int, int, int]:
+    """Borra lo sembrado. Recibe la sesión en vez de abrir la suya para que
+    `sembrar` pueda limpiar y volver a sembrar en una sola transacción: si el
+    sembrado falla a mitad, el borrado se revierte con él."""
+    rows = await session.scalars(
+        select(Contact).where(Contact.attributes[MARCA].astext == "true")
+    )
+    contactos = list(rows)
+    ids = [c.id for c in contactos]
+
+    # Las oportunidades de esos contactos caen por el ON DELETE CASCADE del
+    # FK, pero las que quedaron sin contacto (las últimas de la lista) no
+    # tienen de quién colgar: se borran por título.
+    n_deals = 0
+    titulos = [t for t, *_ in NEGOCIOS]
+    huerfanas = await session.scalars(select(Deal).where(Deal.title.in_(titulos)))
+    for deal in huerfanas:
+        await session.delete(deal)
+        n_deals += 1
+
+    # Los hechos no tienen FK al contacto (scope_id es texto), así que hay que
+    # borrarlos a mano o quedan colgados apuntando a un contacto que ya no
+    # existe.
+    n_hechos = 0
+    if ids:
+        claves = [k for k, *_ in HECHOS]
+        hechos = await session.scalars(
+            select(LongTermMemory).where(
+                LongTermMemory.scope == "contact",
+                LongTermMemory.scope_id.in_([str(i) for i in ids]),
+                LongTermMemory.key.in_(claves),
+            )
+        )
+        for h in hechos:
+            await session.delete(h)
+            n_hechos += 1
+
+    for contact in contactos:
+        await session.delete(contact)
+    await session.flush()
+    return len(contactos), n_deals, n_hechos
+
+
 async def limpiar() -> None:
     async with session_scope() as session:
-        rows = await session.scalars(
-            select(Contact).where(Contact.attributes[MARCA].astext == "true")
-        )
-        contactos = list(rows)
-        ids = [c.id for c in contactos]
+        c, d, h = await _borrar(session)
+        print(f"🧹 {c} contactos, {d} oportunidades y {h} hechos de prueba eliminados.")
 
-        # Las oportunidades de esos contactos caen por el ON DELETE CASCADE del
-        # FK, pero las que quedaron sin contacto (las últimas de la lista) no
-        # tienen de quién colgar: se borran por título.
-        n_deals = 0
-        titulos = [t for t, *_ in NEGOCIOS]
-        huerfanas = await session.scalars(select(Deal).where(Deal.title.in_(titulos)))
-        for deal in huerfanas:
-            await session.delete(deal)
-            n_deals += 1
 
-        # Los hechos no tienen FK al contacto (scope_id es texto), así que hay
-        # que borrarlos a mano o quedan colgados apuntando a un contacto que ya
-        # no existe.
-        n_hechos = 0
-        if ids:
-            claves = [k for k, *_ in HECHOS]
-            hechos = await session.scalars(
-                select(LongTermMemory).where(
-                    LongTermMemory.scope == "contact",
-                    LongTermMemory.scope_id.in_([str(i) for i in ids]),
-                    LongTermMemory.key.in_(claves),
-                )
-            )
-            for h in hechos:
-                await session.delete(h)
-                n_hechos += 1
+async def probar_procedencia(slug: str | None) -> None:
+    """Verifica contra la base real que un hecho débil no pisa a uno fuerte.
 
-        for contact in contactos:
-            await session.delete(contact)
-        print(f"🧹 {len(contactos)} contactos, {n_deals} oportunidades y "
-              f"{n_hechos} hechos de prueba eliminados.")
+    Esta regla vive en el WHERE del upsert, así que los tests unitarios solo
+    pueden comprobar que la sentencia se arma bien — no que Postgres la
+    respete. Esto lo comprueba de verdad.
+    """
+    async with session_scope() as session:
+        tenant = await _tenant(session, slug)
+        if tenant is None:
+            print("❌ No encontré un tenant.")
+            raise SystemExit(1)
+
+        store = LongTermMemoryStore(session, tenant.id)
+        sujeto = "prueba-procedencia"
+        ok = True
+
+        async def leer() -> LongTermMemory | None:
+            # `expire_all` es imprescindible: el upsert va por SQL crudo
+            # (INSERT ... ON CONFLICT) y la sesión no se entera, así que el
+            # identity map seguiría devolviendo la versión vieja de la fila y
+            # la prueba mediría su propia caché en vez de lo que hizo Postgres.
+            session.expire_all()
+            filas = await store.recall_with_provenance("contact", sujeto)
+            return filas[0] if filas else None
+
+        # 1) La persona lo afirma.
+        await store.remember("contact", sujeto, "presupuesto", {"usd": 180000},
+                             basis="stated", source="qualification",
+                             evidence="Mi tope son 180 mil")
+        await session.flush()
+
+        # 2) El agente "deduce" otra cosa. No debe ganar.
+        await store.remember("contact", sujeto, "presupuesto", {"usd": 250000},
+                             basis="inferred", source="sdr",
+                             evidence="Parece que puede estirarse")
+        await session.flush()
+
+        f = await leer()
+        if f and f.basis == "stated" and f.value.get("usd") == 180000:
+            print("✅ Una inferencia NO pisó lo que la persona afirmó.")
+        else:
+            ok = False
+            print(f"❌ El hecho quedó como {f.basis if f else '(vacío)'} "
+                  f"= {f.value if f else None} — el guard no está funcionando.")
+
+        # 3) Una persona del equipo lo corrige. Sí debe ganar.
+        await store.remember("contact", sujeto, "presupuesto", {"usd": 195000},
+                             basis="operator", source="operator",
+                             evidence="Lo confirmé por teléfono")
+        await session.flush()
+
+        f = await leer()
+        if f and f.basis == "operator" and f.value.get("usd") == 195000:
+            print("✅ La corrección de una persona SÍ se impuso.")
+        else:
+            ok = False
+            print(f"❌ El operador no pudo corregir: quedó {f.basis if f else '(vacío)'}.")
+
+        # Limpieza: era un sujeto ficticio, no debe sobrevivir a la prueba.
+        for fila in await store.recall_with_provenance("contact", sujeto):
+            await session.delete(fila)
+
+        if not ok:
+            raise SystemExit(1)
 
 
 def main() -> None:
@@ -235,11 +324,16 @@ def main() -> None:
         print("❌ seed_demo no corre en producción: son datos inventados.", file=sys.stderr)
         raise SystemExit(1)
 
-    args = [a for a in sys.argv[1:] if a != "--limpiar"]
+    flags = {"--limpiar", "--probar-procedencia"}
+    args = [a for a in sys.argv[1:] if a not in flags]
+    slug = args[0] if args else None
+
     if "--limpiar" in sys.argv:
         asyncio.run(limpiar())
+    elif "--probar-procedencia" in sys.argv:
+        asyncio.run(probar_procedencia(slug))
     else:
-        asyncio.run(sembrar(args[0] if args else None))
+        asyncio.run(sembrar(slug))
 
 
 if __name__ == "__main__":
