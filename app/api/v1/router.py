@@ -7,6 +7,7 @@ from app.api.v1 import (
     billing,
     contacts,
     customer_service,
+    deals,
     escalations,
     events,
     integrations,
@@ -25,6 +26,7 @@ api_router.include_router(tenants.router, prefix="/tenants", tags=["tenants"])
 api_router.include_router(leads.router, prefix="/leads", tags=["leads"])
 api_router.include_router(contacts.router, prefix="/contacts", tags=["contacts"])
 api_router.include_router(content.router, prefix="/content", tags=["content"])
+api_router.include_router(deals.router, prefix="/deals", tags=["deals"])
 api_router.include_router(agents.router, prefix="/agents", tags=["agents"])
 api_router.include_router(assistant.router, prefix="/assistant", tags=["assistant"])
 api_router.include_router(

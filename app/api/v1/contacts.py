@@ -13,8 +13,11 @@ from sqlalchemy import select
 from app.api.deps import DbSession, TenantId
 from app.core.exceptions import NotFoundError
 from app.core.logging import get_logger
+from app.memory.long_term import LongTermMemoryStore
+from app.models.agent_run import AgentRun
 from app.models.contact import Contact
 from app.models.conversation import Conversation, Message
+from app.schemas.agent import ContactTrail, TrailFact, TrailStep
 from app.schemas.contact import ContactOut, ContactUpdate, MessageOut
 
 router = APIRouter()
@@ -73,6 +76,46 @@ async def contact_messages(contact_id: UUID, tenant_id: TenantId, session: DbSes
         .order_by(Message.created_at)
     )
     return [MessageOut.model_validate(m) for m in rows]
+
+
+@router.get("/{contact_id}/trail", response_model=ContactTrail)
+async def contact_trail(
+    contact_id: UUID,
+    tenant_id: TenantId,
+    session: DbSession,
+    limit: int = Query(default=50, le=200),
+) -> ContactTrail:
+    """Qué hizo el sistema con esta persona, y en qué se basa lo que cree.
+
+    Dos cosas distintas y las dos necesarias: las corridas dicen qué pasó y
+    cuándo; los hechos dicen qué quedó registrado y sobre qué evidencia. Un
+    agente que actúa sin dejar nada legible obliga a confiar a ciegas, y
+    cuando se equivoca no hay por dónde empezar a mirar.
+    """
+    contact = await session.get(Contact, contact_id)
+    if contact is None or contact.tenant_id != tenant_id:
+        raise NotFoundError("Contact not found")
+
+    runs = await session.scalars(
+        select(AgentRun)
+        .where(AgentRun.tenant_id == tenant_id, AgentRun.contact_id == contact_id)
+        .order_by(AgentRun.created_at.desc())
+        .limit(limit)
+    )
+    steps: list[TrailStep] = []
+    for run in runs:
+        step = TrailStep.model_validate(run)
+        # El `reply` sale del output y va recortado: el JSON completo puede ser
+        # grande y la línea de tiempo solo necesita de qué se trató.
+        reply = (run.output or {}).get("reply")
+        step.reply = reply[:280] if isinstance(reply, str) else None
+        steps.append(step)
+
+    store = LongTermMemoryStore(session, tenant_id)
+    rows = await store.recall_with_provenance("contact", str(contact_id))
+    return ContactTrail(
+        steps=steps, facts=[TrailFact.model_validate(r) for r in rows]
+    )
 
 
 @router.patch("/{contact_id}", response_model=ContactOut)
