@@ -7,6 +7,7 @@ from app.models.lead import Lead
 from app.models.contact import Contact, ContactActivity
 from app.models.conversation import Conversation, Message
 from app.models.event import Event
+from app.models.crm import Company, Deal
 from app.models.memory import LongTermMemory, SemanticMemory
 from app.models.billing import Subscription, Invoice
 from app.models.escalation import Escalation
@@ -27,6 +28,8 @@ __all__ = [
     "Conversation",
     "Message",
     "Event",
+    "Company",
+    "Deal",
     "LongTermMemory",
     "SemanticMemory",
     "Subscription",

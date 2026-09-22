@@ -45,6 +45,13 @@ class Contact(Base, UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin):
         DateTime(timezone=True), nullable=True
     )
 
+    # La empresa detrás de la persona. Nullable porque en varios nichos
+    # (inmobiliaria, salud, retail) el cliente es una persona física y forzar
+    # una empresa inventada ensuciaría los datos.
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("companies.id", ondelete="SET NULL"), nullable=True
+    )
+
     attributes: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
 

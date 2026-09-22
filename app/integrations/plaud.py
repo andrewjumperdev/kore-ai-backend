@@ -9,6 +9,7 @@ semantic memory, action items are stored as long-term facts, and a
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -76,9 +77,17 @@ class PlaudConnector:
                 meta={"source": "plaud"},
             )
         if export.action_items:
+            # `stated`: esto salió de una reunión real grabada, no de que un
+            # modelo dedujera algo. Es de las pocas fuentes donde la persona
+            # efectivamente lo dijo, y por eso pesa más que cualquier
+            # inferencia posterior de un agente.
             await self.memory.long.remember(
                 "contact", str(contact.id), "plaud_action_items",
                 {"items": export.action_items},
+                basis="stated",
+                source="plaud",
+                evidence=(export.summary or None),
+                observed_at=datetime.now(timezone.utc),
             )
 
         await event_bus.emit(

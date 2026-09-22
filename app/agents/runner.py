@@ -213,12 +213,26 @@ class AgentRunner:
             )
 
         # 4) Persist learned facts + remember the agent turn.
+        #
+        # Todo lo que sale de un LLM entra como `inferred`, aunque el agente lo
+        # haya leído textual en el mensaje: no tenemos forma de distinguir "lo
+        # dijo" de "lo dedujo" mirando su salida JSON. Lo que el cliente afirma
+        # explícitamente se marca `stated` donde sí hay certeza —el diagnóstico
+        # del onboarding, un alta manual—, y desde ahí ningún agente lo pisa.
+        #
+        # La evidencia es el mensaje que originó el turno. No es la cita exacta
+        # del hecho puntual, pero es rastreable: alcanza para que alguien pueda
+        # ir a ver de dónde salió algo que parece mal.
         for key, value in result.facts.items():
             await ctx.memory.long.remember(
                 "contact",
                 str(ctx.contact_id) if ctx.contact_id else None,
                 key,
                 value if isinstance(value, dict) else {"value": value},
+                basis="inferred",
+                source=agent_name,
+                evidence=(ctx.user_message or None),
+                observed_at=datetime.now(timezone.utc),
             )
         if ctx.conversation_id:
             # El turno del usuario PRIMERO. Antes solo se guardaba la respuesta
